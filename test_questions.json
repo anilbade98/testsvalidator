@@ -1,0 +1,942 @@
+[
+  {
+    "id": 1,
+    "question": "What's our average CSAT this month?",
+    "flow": "fdl",
+    "complexity": "basic",
+    "priority": true,
+    "expected_tools": ["get_fdl_data"],
+    "golden_answer": null,
+    "tags": ["csat", "basic-analytics"],
+    "multi_turn": false
+  },
+  {
+    "id": 2,
+    "question": "What's the average handle time today?",
+    "flow": "fdl",
+    "complexity": "basic",
+    "priority": true,
+    "expected_tools": ["get_fdl_data"],
+    "golden_answer": null,
+    "tags": ["aht", "acd"],
+    "multi_turn": false
+  },
+  {
+    "id": 3,
+    "question": "Show me all failed evaluations from last week",
+    "flow": "fdl",
+    "complexity": "basic",
+    "priority": true,
+    "expected_tools": ["get_fdl_data"],
+    "golden_answer": null,
+    "tags": ["quality-management", "evaluations"],
+    "multi_turn": false
+  },
+  {
+    "id": 4,
+    "question": "How many calls did we handle yesterday?",
+    "flow": "fdl",
+    "complexity": "basic",
+    "priority": false,
+    "expected_tools": ["get_fdl_data"],
+    "golden_answer": null,
+    "tags": ["acd", "volume"],
+    "multi_turn": false
+  },
+  {
+    "id": 5,
+    "question": "Which agents scored below 70% on empathy in the past 5 days?",
+    "flow": "fdl",
+    "complexity": "basic",
+    "priority": false,
+    "expected_tools": ["get_fdl_data"],
+    "golden_answer": null,
+    "tags": ["quality-management", "coaching"],
+    "multi_turn": false
+  },
+  {
+    "id": 6,
+    "question": "Show me the total time usage for each team on daily basis for the last 30 days",
+    "flow": "fdl",
+    "complexity": "basic",
+    "priority": true,
+    "expected_tools": ["get_fdl_data"],
+    "golden_answer": null,
+    "tags": ["desktop-analytics", "productivity"],
+    "multi_turn": false
+  },
+  {
+    "id": 7,
+    "question": "How does wait time affect CSAT?",
+    "flow": "fdl",
+    "complexity": "intermediate",
+    "priority": true,
+    "expected_tools": ["get_fdl_data"],
+    "golden_answer": null,
+    "tags": ["csat", "acd", "correlation"],
+    "multi_turn": false
+  },
+  {
+    "id": 8,
+    "question": "What's our repeat contact rate?",
+    "flow": "fdl",
+    "complexity": "basic",
+    "priority": true,
+    "expected_tools": ["get_fdl_data"],
+    "golden_answer": null,
+    "tags": ["fcr", "basic-analytics"],
+    "multi_turn": false
+  },
+  {
+    "id": 9,
+    "question": "Show me transcripts of people asking about competitors and what are they asking about?",
+    "flow": "fdl",
+    "complexity": "advanced",
+    "priority": true,
+    "expected_tools": ["get_fdl_data"],
+    "golden_answer": null,
+    "tags": ["transcripts", "competitive"],
+    "multi_turn": false
+  },
+  {
+    "id": 10,
+    "question": "Who are my top 5 performing agents this month?",
+    "flow": "fdl",
+    "complexity": "basic",
+    "priority": false,
+    "expected_tools": ["get_fdl_data"],
+    "golden_answer": null,
+    "tags": ["agent-performance", "quality-management"],
+    "multi_turn": false
+  },
+  {
+    "id": 11,
+    "question": "Show me a forecast vs actual staffing comparison for next week",
+    "flow": "fdl",
+    "complexity": "advanced",
+    "priority": false,
+    "expected_tools": ["get_fdl_data"],
+    "golden_answer": null,
+    "tags": ["wfm", "staffing"],
+    "multi_turn": false
+  },
+  {
+    "id": 12,
+    "question": "Why is CSAT dropping on the tech support team?",
+    "flow": "fdl",
+    "complexity": "advanced",
+    "priority": false,
+    "expected_tools": ["get_fdl_data"],
+    "golden_answer": null,
+    "tags": ["csat", "root-cause"],
+    "multi_turn": false
+  },
+  {
+    "id": 13,
+    "question": "Show me all abandoned calls by category from last week",
+    "flow": "fdl",
+    "complexity": "basic",
+    "priority": false,
+    "expected_tools": ["get_fdl_data"],
+    "golden_answer": null,
+    "tags": ["acd", "abandonment"],
+    "multi_turn": false
+  },
+  {
+    "id": 14,
+    "question": "What are the top 5 most used applications by agents?",
+    "flow": "fdl",
+    "complexity": "basic",
+    "priority": false,
+    "expected_tools": ["get_fdl_data"],
+    "golden_answer": null,
+    "tags": ["desktop-analytics", "productivity"],
+    "multi_turn": false
+  },
+  {
+    "id": 15,
+    "question": "Which agents switch applications the most?",
+    "flow": "fdl",
+    "complexity": "basic",
+    "priority": false,
+    "expected_tools": ["get_fdl_data"],
+    "golden_answer": null,
+    "tags": ["desktop-analytics", "productivity"],
+    "multi_turn": false
+  },
+  {
+    "id": 16,
+    "question": "Show me agents with declining performance this month",
+    "flow": "fdl",
+    "complexity": "basic",
+    "priority": false,
+    "expected_tools": ["get_fdl_data"],
+    "golden_answer": null,
+    "tags": ["agent-performance", "quality-management"],
+    "multi_turn": false
+  },
+  {
+    "id": 17,
+    "question": "What are the biggest contributors to after-call work time?",
+    "flow": "fdl",
+    "complexity": "intermediate",
+    "priority": false,
+    "expected_tools": ["get_fdl_data"],
+    "golden_answer": null,
+    "tags": ["acw", "acd", "efficiency"],
+    "multi_turn": false
+  },
+  {
+    "id": 18,
+    "question": "What specific behaviors separate our top 10% from bottom 10% performers?",
+    "flow": "fdl",
+    "complexity": "advanced",
+    "priority": true,
+    "expected_tools": ["get_fdl_data"],
+    "golden_answer": null,
+    "tags": ["agent-performance", "quality-management", "coaching"],
+    "multi_turn": false
+  },
+  {
+    "id": 19,
+    "question": "Where are escalations from AI agents to human agents happening?",
+    "flow": "fdl",
+    "complexity": "advanced",
+    "priority": true,
+    "expected_tools": ["get_fdl_data"],
+    "golden_answer": null,
+    "tags": ["acd", "ai-agents", "escalation"],
+    "multi_turn": false
+  },
+  {
+    "id": 20,
+    "question": "Which call types have the lowest CSAT?",
+    "flow": "fdl",
+    "complexity": "advanced",
+    "priority": false,
+    "expected_tools": ["get_fdl_data"],
+    "golden_answer": null,
+    "tags": ["csat", "acd"],
+    "multi_turn": false
+  },
+  {
+    "id": 21,
+    "question": "What's the relationship between AHT and quality scores?",
+    "flow": "fdl",
+    "complexity": "advanced",
+    "priority": false,
+    "expected_tools": ["get_fdl_data"],
+    "golden_answer": null,
+    "tags": ["aht", "quality-management", "correlation"],
+    "multi_turn": false
+  },
+  {
+    "id": 101,
+    "question": "Which KB articles are being used most frequently?",
+    "flow": "od",
+    "complexity": "basic",
+    "priority": true,
+    "expected_tools": ["get_athena_data"],
+    "golden_answer": null,
+    "tags": ["kb", "usage"],
+    "multi_turn": false
+  },
+  {
+    "id": 102,
+    "question": "What is the effectiveness rate of our top 10 KB articles?",
+    "flow": "od",
+    "complexity": "intermediate",
+    "priority": false,
+    "expected_tools": ["get_athena_data"],
+    "golden_answer": null,
+    "tags": ["kb", "effectiveness"],
+    "multi_turn": false
+  },
+  {
+    "id": 103,
+    "question": "Show me KB articles with low feedback scores",
+    "flow": "od",
+    "complexity": "basic",
+    "priority": false,
+    "expected_tools": ["get_athena_data"],
+    "golden_answer": null,
+    "tags": ["kb", "feedback"],
+    "multi_turn": false
+  },
+  {
+    "id": 104,
+    "question": "Which KB articles are most effective for resolving billing questions?",
+    "flow": "od",
+    "complexity": "intermediate",
+    "priority": false,
+    "expected_tools": ["get_athena_data"],
+    "golden_answer": null,
+    "tags": ["kb", "billing"],
+    "multi_turn": false
+  },
+  {
+    "id": 105,
+    "question": "Show me KB usage trends over the last month",
+    "flow": "od",
+    "complexity": "basic",
+    "priority": false,
+    "expected_tools": ["get_athena_data"],
+    "golden_answer": null,
+    "tags": ["kb", "trends"],
+    "multi_turn": false
+  },
+  {
+    "id": 106,
+    "question": "Show me a summary of interactions handled today",
+    "flow": "od",
+    "complexity": "basic",
+    "priority": false,
+    "expected_tools": ["get_athena_data"],
+    "golden_answer": null,
+    "tags": ["summaries", "interactions"],
+    "multi_turn": false
+  },
+  {
+    "id": 107,
+    "question": "What are the escalation trends over the past two weeks?",
+    "flow": "od",
+    "complexity": "basic",
+    "priority": false,
+    "expected_tools": ["get_athena_data"],
+    "golden_answer": null,
+    "tags": ["escalations", "trends"],
+    "multi_turn": false
+  },
+  {
+    "id": 108,
+    "question": "Show me the latest quality evaluation scores from the past week",
+    "flow": "od",
+    "complexity": "basic",
+    "priority": false,
+    "expected_tools": ["get_athena_data"],
+    "golden_answer": null,
+    "tags": ["evaluations", "quality"],
+    "multi_turn": false
+  },
+  {
+    "id": 109,
+    "question": "Are we meeting our contact center performance goals this month?",
+    "flow": "od",
+    "complexity": "intermediate",
+    "priority": false,
+    "expected_tools": ["get_athena_data"],
+    "golden_answer": null,
+    "tags": ["goals", "performance"],
+    "multi_turn": false
+  },
+  {
+    "id": 110,
+    "question": "What are the top topics from summarized interactions this week?",
+    "flow": "od",
+    "complexity": "intermediate",
+    "priority": false,
+    "expected_tools": ["get_athena_data"],
+    "golden_answer": null,
+    "tags": ["summaries", "topics"],
+    "multi_turn": false
+  },
+  {
+    "id": 111,
+    "question": "Show me the feedback scores for AI-assisted responses over the last 30 days",
+    "flow": "od",
+    "complexity": "basic",
+    "priority": false,
+    "expected_tools": ["get_athena_data"],
+    "golden_answer": null,
+    "tags": ["feedback", "ai"],
+    "multi_turn": false
+  },
+  {
+    "id": 201,
+    "question": "What are my top automation opportunities?",
+    "flow": "ao",
+    "complexity": "basic",
+    "priority": true,
+    "expected_tools": ["ask_automation_opportunity"],
+    "golden_answer": null,
+    "tags": ["automation", "opportunities"],
+    "multi_turn": false
+  },
+  {
+    "id": 202,
+    "question": "What percentage of my contacts could be automated?",
+    "flow": "ao",
+    "complexity": "basic",
+    "priority": false,
+    "expected_tools": ["ask_automation_opportunity"],
+    "golden_answer": null,
+    "tags": ["automation", "volume"],
+    "multi_turn": false
+  },
+  {
+    "id": 203,
+    "question": "What is the estimated ROI if I automate my top 3 automation opportunities?",
+    "flow": "ao",
+    "complexity": "intermediate",
+    "priority": true,
+    "expected_tools": ["ask_automation_opportunity"],
+    "golden_answer": null,
+    "tags": ["automation", "roi"],
+    "multi_turn": false
+  },
+  {
+    "id": 204,
+    "question": "Show me automation opportunities for billing-related contacts",
+    "flow": "ao",
+    "complexity": "intermediate",
+    "priority": false,
+    "expected_tools": ["ask_automation_opportunity"],
+    "golden_answer": null,
+    "tags": ["automation", "billing"],
+    "multi_turn": false
+  },
+  {
+    "id": 205,
+    "question": "Compare my automation opportunities by potential cost savings",
+    "flow": "ao",
+    "complexity": "intermediate",
+    "priority": false,
+    "expected_tools": ["ask_automation_opportunity"],
+    "golden_answer": null,
+    "tags": ["automation", "cost"],
+    "multi_turn": false
+  },
+  {
+    "id": 206,
+    "question": "How can I use automation to reduce average handle time?",
+    "flow": "ao",
+    "complexity": "advanced",
+    "priority": false,
+    "expected_tools": ["ask_automation_opportunity"],
+    "golden_answer": null,
+    "tags": ["automation", "aht"],
+    "multi_turn": false
+  },
+  {
+    "id": 207,
+    "question": "Why are sessions escalating from AI agents to humans — what are the patterns?",
+    "flow": "ao",
+    "complexity": "advanced",
+    "priority": false,
+    "expected_tools": ["ask_automation_opportunity"],
+    "golden_answer": null,
+    "tags": ["automation", "ai-agents", "escalation"],
+    "multi_turn": false
+  },
+  {
+    "id": 208,
+    "question": "What are customers asking AI agents that we should be able to answer but currently can't?",
+    "flow": "ao",
+    "complexity": "advanced",
+    "priority": false,
+    "expected_tools": ["ask_automation_opportunity"],
+    "golden_answer": null,
+    "tags": ["automation", "ai-agents", "knowledge-gaps"],
+    "multi_turn": false
+  },
+  {
+    "id": 301,
+    "question": "Are there any anomalies in my contact center right now?",
+    "flow": "rca",
+    "complexity": "basic",
+    "priority": true,
+    "expected_tools": ["query_anomalies"],
+    "golden_answer": null,
+    "tags": ["anomalies", "monitoring"],
+    "multi_turn": false
+  },
+  {
+    "id": 302,
+    "question": "Show me CSAT anomalies for the past month",
+    "flow": "rca",
+    "complexity": "basic",
+    "priority": true,
+    "expected_tools": ["query_anomalies"],
+    "golden_answer": null,
+    "tags": ["anomalies", "csat"],
+    "multi_turn": false
+  },
+  {
+    "id": 303,
+    "question": "What caused the spike in AHT last week?",
+    "flow": "rca",
+    "complexity": "intermediate",
+    "priority": false,
+    "expected_tools": ["query_anomalies"],
+    "golden_answer": null,
+    "tags": ["anomalies", "aht", "root-cause"],
+    "multi_turn": false
+  },
+  {
+    "id": 304,
+    "question": "Is there anything unusual happening with my abandonment rate this week?",
+    "flow": "rca",
+    "complexity": "basic",
+    "priority": false,
+    "expected_tools": ["query_anomalies"],
+    "golden_answer": null,
+    "tags": ["anomalies", "abandonment"],
+    "multi_turn": false
+  },
+  {
+    "id": 305,
+    "question": "What anomalies have been detected in agent overall behavior scores recently?",
+    "flow": "rca",
+    "complexity": "intermediate",
+    "priority": false,
+    "expected_tools": ["query_anomalies"],
+    "golden_answer": null,
+    "tags": ["anomalies", "agent-behavior"],
+    "multi_turn": false
+  },
+  {
+    "id": 411,
+    "question": "Compare AI agents to human agents and show me where each needs to improve",
+    "flow": "advisory",
+    "complexity": "advanced",
+    "priority": true,
+    "expected_tools": [],
+    "golden_answer": null,
+    "tags": ["advisory", "ai-agents", "agent-performance"],
+    "multi_turn": false
+  },
+  {
+    "id": 412,
+    "question": "Create a performance dashboard for my team with all key metrics",
+    "flow": "advisory",
+    "complexity": "advanced",
+    "priority": false,
+    "expected_tools": [],
+    "golden_answer": null,
+    "tags": ["advisory", "agent-performance", "dashboard"],
+    "multi_turn": false
+  },
+  {
+    "id": 413,
+    "question": "What's different about our best vs worst performing shifts?",
+    "flow": "advisory",
+    "complexity": "advanced",
+    "priority": false,
+    "expected_tools": [],
+    "golden_answer": null,
+    "tags": ["advisory", "wfm", "agent-performance"],
+    "multi_turn": false
+  },
+  {
+    "id": 414,
+    "question": "What are the most common emotional triggers that lead to escalation?",
+    "flow": "advisory",
+    "complexity": "advanced",
+    "priority": false,
+    "expected_tools": [],
+    "golden_answer": null,
+    "tags": ["advisory", "escalation", "root-cause"],
+    "multi_turn": false
+  },
+  {
+    "id": 401,
+    "question": "How do I improve my automation rate?",
+    "flow": "advisory",
+    "complexity": "advanced",
+    "priority": true,
+    "expected_tools": [],
+    "golden_answer": null,
+    "tags": ["advisory", "automation"],
+    "multi_turn": false
+  },
+  {
+    "id": 402,
+    "question": "What are my AI agents struggling with?",
+    "flow": "advisory",
+    "complexity": "advanced",
+    "priority": true,
+    "expected_tools": [],
+    "golden_answer": null,
+    "tags": ["advisory", "ai-agents"],
+    "multi_turn": false
+  },
+  {
+    "id": 403,
+    "question": "What tasks are my agents working on that are slow?",
+    "flow": "advisory",
+    "complexity": "advanced",
+    "priority": false,
+    "expected_tools": [],
+    "golden_answer": null,
+    "tags": ["advisory", "efficiency"],
+    "multi_turn": false
+  },
+  {
+    "id": 404,
+    "question": "How can I improve my AHT?",
+    "flow": "advisory",
+    "complexity": "advanced",
+    "priority": true,
+    "expected_tools": [],
+    "golden_answer": null,
+    "tags": ["advisory", "aht"],
+    "multi_turn": false
+  },
+  {
+    "id": 405,
+    "question": "What training would help agents most right now?",
+    "flow": "advisory",
+    "complexity": "advanced",
+    "priority": false,
+    "expected_tools": [],
+    "golden_answer": null,
+    "tags": ["advisory", "coaching"],
+    "multi_turn": false
+  },
+  {
+    "id": 406,
+    "question": "How can we reduce repeat calls?",
+    "flow": "advisory",
+    "complexity": "advanced",
+    "priority": false,
+    "expected_tools": [],
+    "golden_answer": null,
+    "tags": ["advisory", "fcr"],
+    "multi_turn": false
+  },
+  {
+    "id": 407,
+    "question": "Where should I focus my coaching efforts?",
+    "flow": "advisory",
+    "complexity": "advanced",
+    "priority": false,
+    "expected_tools": [],
+    "golden_answer": null,
+    "tags": ["advisory", "coaching"],
+    "multi_turn": false
+  },
+  {
+    "id": 408,
+    "question": "Should we invest more in Copilot?",
+    "flow": "advisory",
+    "complexity": "advanced",
+    "priority": false,
+    "expected_tools": [],
+    "golden_answer": null,
+    "tags": ["advisory", "copilot", "roi"],
+    "multi_turn": false
+  },
+  {
+    "id": 409,
+    "question": "How can we improve efficiency without hurting quality?",
+    "flow": "advisory",
+    "complexity": "advanced",
+    "priority": false,
+    "expected_tools": [],
+    "golden_answer": null,
+    "tags": ["advisory", "efficiency", "quality"],
+    "multi_turn": false
+  },
+  {
+    "id": 410,
+    "question": "What's causing repeat calls?",
+    "flow": "advisory",
+    "complexity": "advanced",
+    "priority": true,
+    "expected_tools": [],
+    "golden_answer": null,
+    "tags": ["advisory", "fcr", "root-cause"],
+    "multi_turn": false
+  },
+  {
+    "id": 501,
+    "question": "How does KB article usage affect CSAT scores — are agents who use KB more getting better outcomes?",
+    "flow": "mixed",
+    "complexity": "advanced",
+    "priority": false,
+    "expected_tools": ["get_fdl_data", "get_athena_data"],
+    "golden_answer": null,
+    "tags": ["kb", "csat", "correlation", "mixed"],
+    "multi_turn": false
+  },
+  {
+    "id": 502,
+    "question": "Which agents use KB articles the most and how does that correlate with their quality evaluation scores?",
+    "flow": "mixed",
+    "complexity": "advanced",
+    "priority": false,
+    "expected_tools": ["get_fdl_data", "get_athena_data"],
+    "golden_answer": null,
+    "tags": ["kb", "quality-management", "mixed"],
+    "multi_turn": false
+  },
+  {
+    "id": 503,
+    "question": "Show me interactions where a KB article was consulted but the customer still gave a low CSAT rating",
+    "flow": "mixed",
+    "complexity": "advanced",
+    "priority": false,
+    "expected_tools": ["get_fdl_data", "get_athena_data"],
+    "golden_answer": null,
+    "tags": ["kb", "csat", "mixed"],
+    "multi_turn": false
+  },
+  {
+    "id": 504,
+    "question": "Compare average handle time between interactions where KB was used versus those where it was not",
+    "flow": "mixed",
+    "complexity": "advanced",
+    "priority": false,
+    "expected_tools": ["get_fdl_data", "get_athena_data"],
+    "golden_answer": null,
+    "tags": ["kb", "aht", "mixed"],
+    "multi_turn": false
+  },
+  {
+    "id": 505,
+    "question": "What are the top contact drivers this month and which of those have automation potential?",
+    "flow": "mixed",
+    "complexity": "advanced",
+    "priority": false,
+    "expected_tools": ["get_fdl_data", "ask_automation_opportunity"],
+    "golden_answer": null,
+    "tags": ["volume", "automation", "mixed"],
+    "multi_turn": false
+  },
+  {
+    "id": 506,
+    "question": "Which agents have the strongest correlation between KB article usage and quality evaluation scores?",
+    "flow": "mixed",
+    "complexity": "advanced",
+    "priority": false,
+    "expected_tools": ["get_fdl_data", "get_athena_data"],
+    "golden_answer": null,
+    "tags": ["kb", "quality-management", "correlation", "mixed"],
+    "multi_turn": false
+  },
+  {
+    "id": 507,
+    "question": "Which contact topics appear frequently in KB searches but still have below-average evaluation scores?",
+    "flow": "mixed",
+    "complexity": "advanced",
+    "priority": false,
+    "expected_tools": ["get_fdl_data", "get_athena_data"],
+    "golden_answer": null,
+    "tags": ["kb", "quality-management", "topics", "mixed"],
+    "multi_turn": false
+  },
+  {
+    "id": 601,
+    "question": "What does this chart show and what are the key trends I should be aware of?",
+    "flow": "context",
+    "complexity": "basic",
+    "priority": false,
+    "expected_tools": ["get_current_data"],
+    "golden_answer": null,
+    "tags": ["context", "ui-tree"],
+    "multi_turn": false,
+    "context_fixture": {
+      "uiTree": {
+        "type": "line_chart",
+        "title": "CSAT Score Trend",
+        "metric": "csat_score",
+        "period": "last_30_days",
+        "data_points": [
+          {"date": "2026-05-17", "value": 4.7},
+          {"date": "2026-05-24", "value": 4.5},
+          {"date": "2026-05-31", "value": 4.3},
+          {"date": "2026-06-07", "value": 4.1},
+          {"date": "2026-06-14", "value": 4.0}
+        ]
+      }
+    }
+  },
+  {
+    "id": 602,
+    "question": "Why is this metric dropping and what should I do about it?",
+    "flow": "context",
+    "complexity": "intermediate",
+    "priority": false,
+    "expected_tools": ["get_current_data"],
+    "golden_answer": null,
+    "tags": ["context", "dashboard-data"],
+    "multi_turn": false,
+    "context_fixture": {
+      "data": {
+        "metric": "average_handle_time",
+        "current_value": 487,
+        "previous_value": 412,
+        "unit": "seconds",
+        "period": "this_week_vs_last_week",
+        "breakdown_by_team": [
+          {"team": "billing", "aht": 530},
+          {"team": "tech-support", "aht": 512},
+          {"team": "general", "aht": 420}
+        ]
+      }
+    }
+  },
+  {
+    "id": 603,
+    "question": "Based on what I'm seeing here, what actions should I take to improve performance?",
+    "flow": "context",
+    "complexity": "advanced",
+    "priority": false,
+    "expected_tools": ["get_current_data"],
+    "golden_answer": null,
+    "tags": ["context", "mfe"],
+    "multi_turn": false,
+    "context_fixture": {
+      "mfeState": {
+        "activeMfe": "supervisorDashboard",
+        "view": "teamPerformance",
+        "filters": {"period": "this_week"},
+        "widgets": {
+          "csat": {"value": 3.9, "trend": "down", "threshold": 4.0},
+          "aht": {"value": 510, "trend": "up", "threshold": 450},
+          "fcr": {"value": 0.72, "trend": "stable", "threshold": 0.80}
+        }
+      }
+    }
+  },
+  {
+    "id": 701,
+    "question": "Refresh the CSAT data with the latest numbers",
+    "flow": "refresh",
+    "complexity": "basic",
+    "priority": false,
+    "expected_tools": ["get_fdl_data"],
+    "golden_answer": null,
+    "tags": ["refresh", "fdl", "csat"],
+    "multi_turn": false,
+    "context_fixture": {
+      "data": {
+        "fdl": [
+          {
+            "question": "What's our average CSAT this month?",
+            "sql": "SELECT AVG(csat_score) FROM CallSegments WHERE tenant_id = ? AND MONTH(start_time) = MONTH(CURRENT_DATE)",
+            "columns": ["avg_csat"],
+            "results": [{"avg_csat": 4.2}]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": 702,
+    "question": "Refresh the KB analytics with the latest data",
+    "flow": "refresh",
+    "complexity": "basic",
+    "priority": false,
+    "expected_tools": ["get_athena_data"],
+    "golden_answer": null,
+    "tags": ["refresh", "od", "kb"],
+    "multi_turn": false,
+    "context_fixture": {
+      "data": {
+        "od": [
+          {
+            "question": "Which KB articles are being used most frequently?",
+            "sql": "SELECT article_id, title, COUNT(*) as usage_count FROM kb_queries GROUP BY article_id, title ORDER BY usage_count DESC LIMIT 10",
+            "columns": ["article_id", "title", "usage_count"],
+            "results": [
+              {"article_id": "kb-001", "title": "Reset Password", "usage_count": 342},
+              {"article_id": "kb-002", "title": "Billing FAQ", "usage_count": 289}
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": 703,
+    "question": "Refresh my automation opportunities with current data",
+    "flow": "refresh",
+    "complexity": "basic",
+    "priority": false,
+    "expected_tools": ["ask_automation_opportunity"],
+    "golden_answer": null,
+    "tags": ["refresh", "ao"],
+    "multi_turn": false,
+    "context_fixture": {
+      "data": {
+        "ao": [
+          {
+            "question": "What are my top automation opportunities?",
+            "results": [
+              {"topic": "password_reset", "contact_volume": 1240, "automation_potential": 0.92, "estimated_savings": 18600},
+              {"topic": "billing_inquiry", "contact_volume": 890, "automation_potential": 0.75, "estimated_savings": 13350}
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": 704,
+    "question": "Refresh the anomaly detection data to see if anything changed",
+    "flow": "refresh",
+    "complexity": "basic",
+    "priority": false,
+    "expected_tools": ["query_anomalies"],
+    "golden_answer": null,
+    "tags": ["refresh", "rca", "anomalies"],
+    "multi_turn": false,
+    "context_fixture": {
+      "data": {
+        "rca": [
+          {
+            "question": "Are there any anomalies in my contact center right now?",
+            "results": [
+              {"metric": "aht", "anomaly_type": "spike", "detected_at": "2026-06-16T14:00:00Z", "severity": "medium"}
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": 801,
+    "question": "Hello, what can you help me with?",
+    "flow": "conversational",
+    "complexity": "basic",
+    "priority": false,
+    "expected_tools": [],
+    "golden_answer": null,
+    "tags": ["conversational", "greeting"],
+    "multi_turn": false
+  },
+  {
+    "id": 802,
+    "question": "What data sources do you have access to?",
+    "flow": "conversational",
+    "complexity": "basic",
+    "priority": false,
+    "expected_tools": [],
+    "golden_answer": null,
+    "tags": ["conversational", "capability"],
+    "multi_turn": false
+  },
+  {
+    "id": 803,
+    "question": "What is the weather like today?",
+    "flow": "conversational",
+    "complexity": "basic",
+    "priority": false,
+    "expected_tools": [],
+    "golden_answer": null,
+    "tags": ["conversational", "out-of-domain"],
+    "multi_turn": false
+  },
+  {
+    "id": 804,
+    "question": "Can you send an email to my team with a performance summary?",
+    "flow": "conversational",
+    "complexity": "basic",
+    "priority": false,
+    "expected_tools": [],
+    "golden_answer": null,
+    "tags": ["conversational", "out-of-domain"],
+    "multi_turn": false
+  }
+]
