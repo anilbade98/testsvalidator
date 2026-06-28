@@ -54,6 +54,45 @@ QUESTIONS_PATH = HARNESS_DIR / "test_questions.json"
 DEFAULT_OUT_DIR = HARNESS_DIR / "results"
 
 
+def _persist_to_dynamodb(run_path: Path) -> None:
+    """Write the run's records to DynamoDB. Best-effort: log + continue on failure
+    so a transient AWS hiccup doesn't lose the local JSON result the user already has."""
+    try:
+        from tests.validator.persistence import persist_run_file
+        persist_run_file(run_path)
+        print(f"Persisted to DynamoDB: {run_path.name}")
+    except Exception as exc:
+        print(f"WARNING: DynamoDB persist failed: {type(exc).__name__}: {exc}")
+        print(f"   Local result file is intact at {run_path}.")
+
+
+def _is_localhost_base_url(base_url: str | None) -> bool:
+    if not base_url:
+        return False
+    return "localhost" in base_url or "127.0.0.1" in base_url
+
+
+def _should_refuse_local_persist(base_url: str | None, allow_local_persist: bool) -> bool:
+    """Refuse `--persist` against a localhost service unless CI=true or the user
+    explicitly opts in. Shared between the full-run path (where base_url comes
+    from argparse) and the re-score path (where it comes from the run JSON's
+    metadata)."""
+    return (
+        _is_localhost_base_url(base_url)
+        and not os.environ.get("CI")
+        and not allow_local_persist
+    )
+
+
+def _read_run_meta_base_url(run_path: Path) -> str | None:
+    try:
+        import json
+        with run_path.open("r", encoding="utf-8") as fh:
+            return (json.load(fh).get("meta") or {}).get("base_url")
+    except Exception:
+        return None
+
+
 def _write_html(run_path: Path) -> None:
     try:
         from tests.validator.reporter import generate_html_report
@@ -105,6 +144,17 @@ async def _async_main(ns: argparse.Namespace) -> int:
         agg = write_aggregated(run_path)
         print_summary(agg)
         _write_html(run_path)
+        if ns.persist:
+            stored_base_url = _read_run_meta_base_url(run_path)
+            if _should_refuse_local_persist(stored_base_url, ns.allow_local_persist):
+                print(
+                    "--persist refused: run was collected against a localhost base_url "
+                    f"({stored_base_url!r}) and CI=true is not set. Persisting a local run "
+                    "would pollute the dev-illum validator tables. Pass --allow-local-persist "
+                    "if you really mean it."
+                )
+                return 1
+            _persist_to_dynamodb(run_path)
         return 0
 
     # ── SSM tunnels (optional, local runs only) ───────────────────────────────
@@ -131,6 +181,17 @@ async def _async_main(ns: argparse.Namespace) -> int:
     # ── Validate flag combinations ───────────────────────────────────────────
     if ns.persist and ns.skip_eval:
         print("--persist requires a full run with eval. Remove --skip-eval or remove --persist.")
+        return 1
+    # Guard: local-developer runs (service on localhost) must not silently
+    # write to the shared dev-illum DynamoDB tables. CI sets CI=true so its
+    # nightly runs sail through; a developer who genuinely wants to write to
+    # dev-illum from their laptop has to pass --allow-local-persist.
+    if ns.persist and _should_refuse_local_persist(ns.base_url, ns.allow_local_persist):
+        print(
+            "--persist refused: target base_url is localhost and CI=true is not set. "
+            "Persisting from a local machine would pollute the dev-illum validator tables. "
+            "Pass --allow-local-persist if you really mean it."
+        )
         return 1
 
     # ── Auth + URL required for collection ───────────────────────────────────
@@ -200,6 +261,9 @@ async def _async_main(ns: argparse.Namespace) -> int:
     print_summary(agg)
     _write_html(out_path)
 
+    if ns.persist:
+        _persist_to_dynamodb(out_path)
+
     if tunnel_pool:
         tunnel_pool.stop_all()
     return 0
@@ -262,7 +326,14 @@ def main() -> int:
     p.add_argument("--persist", action="store_true",
                    help="Write results and scores to DynamoDB after the run. "
                         "Requires a full scored run — incompatible with --skip-eval. "
-                        "Off by default; use only for nightly/scheduled runs.")
+                        "Off by default; use only for nightly/scheduled runs. "
+                        "Refused when --base-url points at localhost unless CI=true is "
+                        "set in the environment or --allow-local-persist is passed.")
+    p.add_argument("--allow-local-persist", dest="allow_local_persist", action="store_true",
+                   help="Escape hatch: permit --persist even when running against a "
+                        "localhost --base-url. Required because that combination usually "
+                        "means a developer is testing on their laptop and would otherwise "
+                        "pollute the dev-illum validator tables.")
 
     p.add_argument("--output", type=str, default=None,
                    help="Explicit output path (default: results/run_<timestamp>.json).")
