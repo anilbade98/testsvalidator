@@ -51,6 +51,7 @@ from tests.validator.runner import (  # noqa: E402
 
 HARNESS_DIR = Path(__file__).resolve().parent
 QUESTIONS_PATH = HARNESS_DIR / "test_questions.json"
+CHAINS_PATH = HARNESS_DIR / "test_chains.json"
 DEFAULT_OUT_DIR = HARNESS_DIR / "results"
 
 
@@ -124,6 +125,10 @@ def _make_filter_config(ns: argparse.Namespace) -> dict:
 
 
 async def _async_main(ns: argparse.Namespace) -> int:
+    # ── Chain evaluation mode ─────────────────────────────────────────────────
+    if ns.chains:
+        return await _async_chains(ns)
+
     # ── Re-score only (no agent invocation) ──────────────────────────────────
     if ns.eval_only or ns.eval_latest:
         from tests.validator.evaluator import evaluate_run_file
@@ -243,7 +248,7 @@ async def _async_main(ns: argparse.Namespace) -> int:
         env=ns.env,
         tunnel_pool=tunnel_pool,
     )
-    print(f"\nCollected {len(run['results'])} records → {out_path}")
+    print(f"\nCollected {len(run['results'])} records -> {out_path}")
 
     if ns.skip_eval:
         print("--skip-eval set; skipping LLM scoring pass.")
@@ -271,6 +276,89 @@ async def _async_main(ns: argparse.Namespace) -> int:
 
 
 
+async def _async_chains(ns: argparse.Namespace) -> int:
+    """Entry point for --chains mode."""
+    from tests.validator.chain_runner import (
+        load_chains, select_chains, run_all_chains,
+    )
+
+    if not CHAINS_PATH.exists():
+        print(f"Chain catalog not found: {CHAINS_PATH}")
+        return 1
+
+    # ── SSM tunnels ───────────────────────────────────────────────────────────
+    tunnel_pool = None
+    if ns.tunnel:
+        if not ns.env:
+            print("--tunnel requires --env")
+            return 1
+        from tests.validator.tunnel import TunnelPool, install_sigint_handler
+        tunnel_pool = TunnelPool.for_env(
+            ns.env,
+            fdl_port=ns.tunnel_fdl_port,
+            od_port=ns.tunnel_od_port,
+            ao_port=ns.tunnel_ao_port,
+            rca_port=ns.tunnel_rca_port,
+        )
+        install_sigint_handler(tunnel_pool)
+
+    if not ns.base_url:
+        print("--base-url is required for chain runs.")
+        return 1
+
+    print("Authenticating ...")
+    auth = resolve_auth(env=ns.env)
+    if not auth.get("token"):
+        print("Authentication failed.")
+        return 1
+    print(f"  tenant_id={auth.get('tenant_id')!r}")
+
+    all_chains = load_chains(CHAINS_PATH)
+    chain_ids = [int(x) for x in ns.chain_ids.split(",") if x.strip()] if ns.chain_ids else None
+    selected = select_chains(
+        all_chains,
+        chain_ids=chain_ids,
+        flow=ns.flow,
+        priority_only=ns.priority_only,
+        limit=ns.limit,
+    )
+    if not selected:
+        print("No chains matched the given filters.")
+        return 1
+
+    print(f"Selected {len(selected)}/{len(all_chains)} chains.")
+    DEFAULT_OUT_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = (
+        Path(ns.output) if ns.output
+        else DEFAULT_OUT_DIR / f"chains_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
+    )
+    print(f"Output: {out_path}")
+
+    run = run_all_chains(
+        selected, auth,
+        base_url=ns.base_url,
+        out_path=out_path,
+        env=ns.env,
+        tunnel_pool=tunnel_pool,
+    )
+    print(f"\nCollected {len(run['results'])} chains -> {out_path}")
+
+    if ns.skip_eval:
+        print("--skip-eval set; skipping LLM scoring pass.")
+        if tunnel_pool:
+            tunnel_pool.stop_all()
+        return 0
+
+    print("\nRunning chain eval pass ...")
+    from tests.validator.chain_evaluator import evaluate_chain_file
+    evaluate_chain_file(out_path)
+    print(f"\nChain scoring complete -> {out_path}")
+
+    if tunnel_pool:
+        tunnel_pool.stop_all()
+    return 0
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description="Analytics Agent Validator CLI")
 
@@ -294,6 +382,12 @@ def main() -> int:
                    help="Local port for the AO SSM tunnel (default: 8081).")
     p.add_argument("--tunnel-rca-port", dest="tunnel_rca_port", type=int, default=9010,
                    help="Local port for the RCA SSM tunnel (default: 9010).")
+
+    p.add_argument("--chains", action="store_true",
+                   help="Run multi-turn chain validation (uses test_chains.json) instead "
+                        "of single-turn questions.")
+    p.add_argument("--chain-ids", dest="chain_ids", type=str, default=None,
+                   help="Comma-separated chain IDs to run (e.g. 1,3,5). Chains mode only.")
 
     p.add_argument("--flow", type=str, default=None,
                    choices=sorted(VALID_FLOWS),

@@ -1,9 +1,13 @@
 """GEval metric definitions for the Analytics Agent Validator.
 
-Three LLM-judge metrics apply to data-query flows:
+Single-turn metrics:
   - interpretation_coverage: one score per question
   - sql_correctness:          one score per SQL call
   - agent_response:           one score per question
+
+Chain metrics (multi-turn):
+  - turn_response:        per-turn quality (same criteria as agent_response)
+  - context_retention:    whether later turns correctly build on prior context
 
 Each metric uses evaluation_steps (3-4 sub-criteria) instead of a single
 criteria string. This produces finer-grained decimal scores (e.g. 0.83, 0.67)
@@ -188,6 +192,65 @@ def build_metrics(
                 "limitations of the data (e.g. partial week, small sample size, missing data). "
                 "Do not penalize claims plausible from unseen rows — only penalize claims that "
                 "contradict visible SQL rows or are clearly fabricated.",
+            ],
+        ),
+    }
+
+
+def build_chain_metrics(
+    llm: DeepEvalBaseLLM,
+    threshold: float = PASS_THRESHOLD,
+    *,
+    verbose: bool = True,
+) -> dict[str, GEval]:
+    """GEval metrics specific to multi-turn chain evaluation."""
+
+    def _g(name: str, steps: list[str]) -> GEval:
+        return GEval(
+            name=name,
+            evaluation_steps=steps,
+            evaluation_params=[
+                LLMTestCaseParams.INPUT,
+                LLMTestCaseParams.ACTUAL_OUTPUT,
+                LLMTestCaseParams.CONTEXT,
+            ],
+            model=llm,
+            threshold=threshold,
+            verbose_mode=verbose,
+            async_mode=False,
+        )
+
+    return {
+        "turn_response": _g(
+            "Turn Response Quality",
+            [
+                "The response directly and relevantly answers the current turn's question "
+                "with specific, data-driven insights. It cites concrete values, identifies "
+                "meaningful patterns, and offers actionable context — not vague generalities.",
+
+                "Every specific numerical claim is traceable to the SQL results or prior "
+                "turn context provided, or is a valid arithmetic derivation from those. "
+                "Verify derivations rather than rejecting them. Only flag claims not "
+                "traceable to any visible data.",
+
+                "The response correctly applies domain knowledge — metric scales, threshold "
+                "meanings, and business context — consistent with the schema documentation "
+                "and prior conversation context.",
+            ],
+        ),
+
+        "context_retention": _g(
+            "Context Retention",
+            [
+                "The response correctly references or builds on specific information "
+                "established in earlier turns — figures, entities, time ranges, or conclusions "
+                "that were already discussed. It does not re-derive from scratch what was "
+                "already known from prior turns.",
+
+                "The response does not contradict or ignore relevant findings from previous "
+                "turns. If earlier turns surfaced specific data points (e.g. a team name, "
+                "a metric value, an anomaly), the response either references them correctly "
+                "or has a clear reason for not doing so.",
             ],
         ),
     }

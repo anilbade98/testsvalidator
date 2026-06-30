@@ -1,4 +1,4 @@
-"""Schema validation for test_questions.json.
+"""Schema validation for test_questions.json and test_chains.json.
 
 Run:
     python -m tests.validator.validate_catalog
@@ -14,6 +14,7 @@ from pathlib import Path
 
 HARNESS_DIR = Path(__file__).resolve().parent
 QUESTIONS_PATH = HARNESS_DIR / "test_questions.json"
+CHAINS_PATH = HARNESS_DIR / "test_chains.json"
 
 VALID_FLOWS = {"fdl", "od", "ao", "rca", "advisory", "mixed", "context", "refresh", "conversational"}
 VALID_COMPLEXITY = {"basic", "intermediate", "advanced"}
@@ -71,6 +72,50 @@ def validate_questions(questions: list[dict]) -> list[str]:
     return errors
 
 
+def validate_chains(chains: list[dict]) -> list[str]:
+    errors: list[str] = []
+    seen_ids: set[int] = set()
+
+    for i, chain in enumerate(chains):
+        loc = f"chain[{i}]"
+
+        cid = chain.get("chain_id")
+        if not isinstance(cid, int):
+            errors.append(_err(loc, f"'chain_id' must be an int, got {type(cid).__name__}"))
+        elif cid in seen_ids:
+            errors.append(_err(loc, f"duplicate chain_id={cid}"))
+        else:
+            seen_ids.add(cid)
+
+        if not isinstance(chain.get("name"), str) or not chain["name"].strip():
+            errors.append(_err(loc, "'name' must be a non-empty string"))
+
+        flow = chain.get("flow")
+        if flow not in VALID_FLOWS:
+            errors.append(_err(loc, f"'flow' must be one of {sorted(VALID_FLOWS)}, got {flow!r}"))
+
+        if not isinstance(chain.get("priority"), bool):
+            errors.append(_err(loc, f"'priority' must be a bool, got {type(chain.get('priority')).__name__}"))
+
+        turns = chain.get("turns")
+        if not isinstance(turns, list) or len(turns) < 2:
+            errors.append(_err(loc, "'turns' must be a list with at least 2 turns"))
+            continue
+
+        for j, turn in enumerate(turns):
+            tloc = f"{loc}.turns[{j}]"
+            if not isinstance(turn.get("question"), str) or not turn["question"].strip():
+                errors.append(_err(tloc, "'question' must be a non-empty string"))
+            if not isinstance(turn.get("expected_tools"), list):
+                errors.append(_err(tloc, "'expected_tools' must be a list"))
+            elif not all(isinstance(t, str) for t in turn["expected_tools"]):
+                errors.append(_err(tloc, "'expected_tools' must be a list of strings"))
+            if "golden_answer" not in turn:
+                errors.append(_err(tloc, "'golden_answer' field is required (use null if not set)"))
+
+    return errors
+
+
 def main() -> int:
     all_errors: list[str] = []
 
@@ -96,15 +141,40 @@ def main() -> int:
             print(e)
         all_errors.extend(q_errors)
 
+    # ── Chains ────────────────────────────────────────────────────────────────
+    if CHAINS_PATH.exists():
+        try:
+            chains = json.loads(CHAINS_PATH.read_text())
+        except json.JSONDecodeError as exc:
+            print(f"ERROR: {CHAINS_PATH.name} is not valid JSON — {exc}")
+            return 1
+
+        if not isinstance(chains, list):
+            print(f"ERROR: {CHAINS_PATH.name} must be a JSON array, got {type(chains).__name__}")
+            return 1
+
+        c_errors = validate_chains(chains)
+        if c_errors:
+            print(f"\ntest_chains.json — {len(c_errors)} error(s):")
+            for e in c_errors:
+                print(e)
+            all_errors.extend(c_errors)
+    else:
+        chains = []
+
     if not all_errors:
         q_by_flow: dict[str, int] = {}
         for q in questions:
             q_by_flow[q["flow"]] = q_by_flow.get(q["flow"], 0) + 1
         priority_count = sum(1 for q in questions if q.get("priority"))
+        chain_turns = sum(len(c["turns"]) for c in chains)
 
         print(f"test_questions.json  OK — {len(questions)} questions, {priority_count} priority")
         for flow, count in sorted(q_by_flow.items()):
             print(f"  {flow:<15} {count}")
+        if chains:
+            priority_chains = sum(1 for c in chains if c.get("priority"))
+            print(f"test_chains.json     OK — {len(chains)} chains, {chain_turns} total turns, {priority_chains} priority")
         return 0
 
     print(f"\n{len(all_errors)} total error(s). Fix and re-run.")

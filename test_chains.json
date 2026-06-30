@@ -1,0 +1,168 @@
+[
+  {
+    "chain_id": 1,
+    "name": "CSAT drill-down",
+    "flow": "fdl",
+    "priority": true,
+    "turns": [
+      {
+        "question": "What's our average CSAT this month?",
+        "expected_tools": ["get_fdl_data"],
+        "golden_answer": null
+      },
+      {
+        "question": "Break it down by team",
+        "expected_tools": ["get_fdl_data"],
+        "golden_answer": null
+      },
+      {
+        "question": "Which agents on the lowest-scoring team need the most coaching?",
+        "expected_tools": ["get_fdl_data"],
+        "golden_answer": null
+      }
+    ]
+  },
+  {
+    "chain_id": 2,
+    "name": "AHT investigation",
+    "flow": "fdl",
+    "priority": true,
+    "turns": [
+      {
+        "question": "What's our average handle time this week?",
+        "expected_tools": ["get_fdl_data"],
+        "golden_answer": null
+      },
+      {
+        "question": "Which call reasons have the highest AHT?",
+        "expected_tools": ["get_fdl_data"],
+        "golden_answer": null
+      },
+      {
+        "question": "How does that compare to last week for those same call reasons?",
+        "expected_tools": ["get_fdl_data"],
+        "golden_answer": null
+      }
+    ]
+  },
+  {
+    "chain_id": 3,
+    "name": "KB effectiveness deep dive",
+    "flow": "od",
+    "priority": true,
+    "turns": [
+      {
+        "question": "Which KB articles are used most frequently?",
+        "expected_tools": ["get_athena_data"],
+        "golden_answer": null
+      },
+      {
+        "question": "What are the effectiveness scores for those top articles?",
+        "expected_tools": ["get_athena_data"],
+        "golden_answer": null
+      },
+      {
+        "question": "Which of those top articles have the lowest scores and should be improved?",
+        "expected_tools": ["get_athena_data"],
+        "golden_answer": null
+      }
+    ]
+  },
+  {
+    "chain_id": 4,
+    "name": "Anomaly investigation",
+    "flow": "rca",
+    "priority": true,
+    "turns": [
+      {
+        "question": "Are there any anomalies in my contact center right now?",
+        "expected_tools": ["query_anomalies"],
+        "golden_answer": null
+      },
+      {
+        "question": "Tell me more about the most significant anomaly you found",
+        "expected_tools": ["query_anomalies"],
+        "golden_answer": null
+      },
+      {
+        "question": "What's the trend in that metric over the past 30 days?",
+        "expected_tools": ["get_fdl_data"],
+        "golden_answer": null
+      }
+    ]
+  },
+  {
+    "chain_id": 5,
+    "name": "Agent performance review",
+    "flow": "fdl",
+    "priority": false,
+    "turns": [
+      {
+        "question": "Who are my top 5 performing agents this month?",
+        "expected_tools": ["get_fdl_data"],
+        "golden_answer": null
+      },
+      {
+        "question": "How do their behavioral scores compare to the rest of the team?",
+        "expected_tools": ["get_fdl_data"],
+        "golden_answer": null
+      },
+      {
+        "question": "What are the common traits separating these top performers from the others?",
+        "expected_tools": [],
+        "golden_answer": null
+      },
+      {
+        "question": "What specific actions should I take to help lower performers reach that level?",
+        "expected_tools": [],
+        "golden_answer": null
+      }
+    ]
+  },
+  {
+    "chain_id": 6,
+    "name": "Automation ROI analysis",
+    "flow": "ao",
+    "priority": false,
+    "turns": [
+      {
+        "question": "What are my top automation opportunities?",
+        "expected_tools": ["ask_automation_opportunity"],
+        "golden_answer": null
+      },
+      {
+        "question": "What is the current contact volume and average handle time for those opportunity categories?",
+        "expected_tools": ["get_fdl_data"],
+        "golden_answer": null
+      },
+      {
+        "question": "Based on that data, what would the estimated ROI be if I automated the top 3?",
+        "expected_tools": [],
+        "golden_answer": null
+      }
+    ]
+  },
+  {
+    "chain_id": 7,
+    "name": "Quality failure patterns",
+    "flow": "fdl",
+    "priority": false,
+    "turns": [
+      {
+        "question": "Show me all failed evaluations from last week",
+        "expected_tools": ["get_fdl_data"],
+        "golden_answer": null
+      },
+      {
+        "question": "Which evaluation criteria had the most failures?",
+        "expected_tools": ["get_fdl_data"],
+        "golden_answer": null
+      },
+      {
+        "question": "Which agents have repeated failures in those specific criteria?",
+        "expected_tools": ["get_fdl_data"],
+        "golden_answer": null
+      }
+    ]
+  }
+]

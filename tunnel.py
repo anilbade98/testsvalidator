@@ -7,19 +7,19 @@ before the first question that needs each service.
 
 Tunnel topology (matches appsettings.Local.json):
 
-  fdl: localhost:9007 → fdl-svc-alb.{env}-illum.internal:9007
+  fdl: localhost:9007 -> fdl-svc-alb.{env}-illum.internal:9007
        via: {env}-illum-jump-server (internal ALB, HTTP)
 
-  od:  localhost:9009 → od-analytics-dq-alb.{env}-illum.internal:80
+  od:  localhost:9009 -> od-analytics-dq-alb.{env}-illum.internal:80
        via: {env}-illum-jump-server (internal ALB, HTTP)
 
-  ao:  localhost:8081 → {ecs_task_private_ip}:80
+  ao:  localhost:8081 -> {ecs_task_private_ip}:80
        via: any online SSM instance (direct-to-task, bypasses the HTTPS ALB)
        The AO ALB is HTTPS-only, but the ECS container itself speaks plain HTTP
        on port 80. Task IP is looked up fresh each time (changes on every deploy).
        FastMCP sessions are pinned per-replica, so direct-to-task is required.
 
-  rca: localhost:9010 → eai-anomaly-detection.illuminate.service.nicecxone-staging.com:80
+  rca: localhost:9010 -> eai-anomaly-detection.illuminate.service.nicecxone-staging.com:80
        via: {env}-illum-jump-server (public hostname, HTTP port 80 confirmed working)
 
 Usage from run.py:
@@ -42,7 +42,7 @@ import time
 from dataclasses import dataclass, field
 
 
-# ── Tool → service mapping ─────────────────────────────────────────────────────
+# ── Tool -> service mapping ─────────────────────────────────────────────────────
 
 TOOL_SERVICE = {
     "get_fdl_data":               "fdl",
@@ -128,7 +128,7 @@ class ServiceTunnel:
         raise TimeoutError(
             f"[{self.name}] tunnel did not open on localhost:{self.local_port} "
             f"within {_READY_TIMEOUT}s. "
-            f"(relay={self.relay_instance_id} → {self.remote_host}:{self.remote_port})"
+            f"(relay={self.relay_instance_id} -> {self.remote_host}:{self.remote_port})"
         )
 
     def ensure(self) -> None:
@@ -326,7 +326,7 @@ class TunnelPool:
             if not tunnel.is_alive():
                 action = "restarting" if tunnel._proc is not None else "starting"
                 print(f"  [{service}] {action} SSM tunnel "
-                      f"localhost:{tunnel.local_port} → {tunnel.remote_host}:{tunnel.remote_port}")
+                      f"localhost:{tunnel.local_port} -> {tunnel.remote_host}:{tunnel.remote_port}")
                 tunnel.start()
                 print(f"  [{service}] ready")
 
