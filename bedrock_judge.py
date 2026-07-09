@@ -18,7 +18,13 @@ BEDROCK_EXPIRED_TOKEN_DELAY = 60
 
 
 class BedrockJudge(DeepEvalBaseLLM):
-    """DeepEval LLM backed by Claude Sonnet 4.6 on Bedrock Converse API."""
+    """DeepEval LLM backed by Claude Sonnet 4.6 on Bedrock Converse API.
+
+    Mirrors Strands' BedrockModel credential strategy: each instance owns a
+    fresh boto3.Session() so credentials are resolved independently of the
+    module-level default session. On ExpiredToken the session is discarded and
+    a new one is created so the next attempt picks up the renewed credentials.
+    """
 
     def __init__(
         self,
@@ -27,12 +33,13 @@ class BedrockJudge(DeepEvalBaseLLM):
     ):
         self.model_id = model_id
         self._max_tokens = max_tokens
+        self._session = boto3.Session()  # per-instance session, like Strands BedrockModel
         self._client = None
 
     def _new_client(self):
-        self._client = boto3.client(
+        self._client = self._session.client(
             "bedrock-runtime",
-            config=botocore.config.Config(read_timeout=300, connect_timeout=10),
+            config=botocore.config.Config(read_timeout=120, connect_timeout=10),
         )
         return self._client
 
@@ -77,6 +84,10 @@ class BedrockJudge(DeepEvalBaseLLM):
                     is_expired = "ExpiredToken" in str(e) or "NoCredentials" in str(e)
                     delay = BEDROCK_EXPIRED_TOKEN_DELAY if is_expired else BEDROCK_RETRY_DELAY
                     time.sleep(delay)
+                    if is_expired:
+                        # Fresh session picks up renewed credentials from source,
+                        # same reason Strands creates a new Session per BedrockModel.
+                        self._session = boto3.Session()
                     self._new_client()
                     continue
                 raise

@@ -45,6 +45,17 @@ INTERPRETATION_FLOWS = {"fdl", "od", "ao", "rca", "advisory", "mixed"}
 FDL_SQL_CONVENTIONS = """
 ## FDL (Snowflake SQL) Conventions the agent must follow
 
+### Tenant scoping — NO tenantid filter needed
+FDL queries run against the Snowflake DataLake. Data is automatically scoped to the tenant
+by the FDL service API authentication. There is NO TenantId column to filter on and it is
+CORRECT to omit any tenantid / TenantId WHERE condition. Do NOT penalise FDL SQL for
+a missing tenantid filter.
+
+### Date syntax (Snowflake)
+FDL uses Snowflake SQL. Valid date expressions include DATEADD(), CURRENT_DATE(),
+CURRENT_TIMESTAMP(), and DATEDIFF(). Do NOT apply Athena/Presto date conventions
+(BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD') to FDL queries — those are Athena-only.
+
 ### Counting segments
 - Always use COUNT(DISTINCT CallSegmentId) for segment counts — never COUNT(*) or COUNT(column) without DISTINCT.
 
@@ -75,7 +86,11 @@ ATHENA_SQL_CONVENTIONS = """
 ## Athena (Presto SQL) Conventions the agent must follow
 
 ### Required filters (every query)
-- Must include: tenantid = '<authenticated_tenant_id>'
+- Must include a static tenantid equality filter: `tenantid = '<uuid>'`.
+  If the SQL shows `tenantid = 'auto-injected'`, treat it as correct — it is a placeholder
+  the service replaces with the real tenant UUID before execution.
+  Subquery form (`tenantid = (SELECT DISTINCT tenantid …)`) is WRONG — Athena partition
+  projection requires a static equality condition.
 - Must include: date range filter (date BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD')
 - The 'date' column is VARCHAR 'YYYY-MM-DD' — do NOT cast to DATE type.
 

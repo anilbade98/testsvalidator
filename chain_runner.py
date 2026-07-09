@@ -7,12 +7,14 @@ within a shared session, and captures per-turn records.
 from __future__ import annotations
 
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from tests.validator.runner import _stream_request, _extract_text, _has_auth_error, _refresh_auth
-from tests.validator.trace_capture import _extract_cortex_traces, _aggregate_usage, _streaming_events_summary, _tools_called, _extract_tool_results
+from tests.validator.trace_capture import _extract_sub_reasoning, _extract_od_fdl_results, _aggregate_usage, _streaming_events_summary, _tools_called, _extract_tool_results
 
 
 HARNESS_DIR = Path(__file__).resolve().parent
@@ -28,14 +30,16 @@ def _build_turn_record(
     duration_ms: int,
     error: str | None,
 ) -> dict:
-    cortex_traces = _extract_cortex_traces(events)
+    sub_reasoning = _extract_sub_reasoning(events)
+    od_fdl_results = _extract_od_fdl_results(events)
     tool_results = _extract_tool_results(events)
     record: dict = {
         "turn_index": turn_index,
         "question": turn_meta.get("question", ""),
         "expected_tools": turn_meta.get("expected_tools", []),
         "tools_called": _tools_called(events),
-        "cortex_traces": cortex_traces,
+        "sub_reasoning": sub_reasoning,
+        "od_fdl_results": od_fdl_results,
         "streaming_events": _streaming_events_summary(events),
         "agent_response": _extract_text(events),
         "duration_ms": duration_ms,
@@ -74,6 +78,7 @@ def _run_chain(
     run_id: str,
     env: str | None = None,
     tunnel_pool=None,
+    reference_date: str | None = None,
 ) -> dict:
     """Execute all turns of a single chain within one shared session."""
     import time
@@ -99,6 +104,7 @@ def _run_chain(
                 base_url, auth,
                 text=turn_meta["question"],
                 session_id=session_id,
+                reference_date=reference_date,
             )
         except Exception as e:
             error = f"{type(e).__name__}: {e}"
@@ -120,39 +126,66 @@ def run_all_chains(
     out_path: Path,
     env: str | None = None,
     tunnel_pool=None,
+    parallel: int = 1,
+    reference_date: str | None = None,
 ) -> dict:
     run_id = f"chains_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
-    results: list[dict] = []
     total = len(chains)
 
-    for i, chain in enumerate(chains, 1):
-        cid = chain.get("chain_id")
-        name = chain.get("name", "")
-        n_turns = len(chain.get("turns") or [])
-        print(f"\n[{i}/{total}] chain{cid} [{chain.get('flow','?')}] {n_turns} turns: {name}")
+    if parallel <= 1:
+        results: list[dict] = []
+        for i, chain in enumerate(chains, 1):
+            cid = chain.get("chain_id")
+            name = chain.get("name", "")
+            n_turns = len(chain.get("turns") or [])
+            print(f"\n[{i}/{total}] chain{cid} [{chain.get('flow','?')}] {n_turns} turns: {name}")
+            record = _run_chain(chain, auth, base_url, run_id=run_id, env=env, tunnel_pool=tunnel_pool, reference_date=reference_date)
+            if any(_has_auth_error([], t.get("error")) for t in record["turns"]):
+                print("  Auth error — refreshing token and retrying ...")
+                if _refresh_auth(auth, env):
+                    record = _run_chain(chain, auth, base_url, run_id=run_id, env=env, tunnel_pool=tunnel_pool, reference_date=reference_date)
+            results.append(record)
+            _summarize_chain(record)
+            _save_chains(out_path, run_id, results)
+    else:
+        results_list: list[dict | None] = [None] * len(chains)
+        save_lock = threading.Lock()
+        counter = [0]
 
-        record = _run_chain(chain, auth, base_url, run_id=run_id, env=env, tunnel_pool=tunnel_pool)
+        def _work(idx: int, chain: dict) -> None:
+            record = _run_chain(chain, auth, base_url, run_id=run_id, env=env, tunnel_pool=tunnel_pool, reference_date=reference_date)
+            if any(_has_auth_error([], t.get("error")) for t in record["turns"]):
+                if _refresh_auth(auth, env):
+                    record = _run_chain(chain, auth, base_url, run_id=run_id, env=env, tunnel_pool=tunnel_pool, reference_date=reference_date)
+            with save_lock:
+                counter[0] += 1
+                n = counter[0]
+                cid = chain.get("chain_id")
+                name = chain.get("name", "")
+                n_turns = len(chain.get("turns") or [])
+                print(f"\n[{n}/{total}] chain{cid} [{chain.get('flow','?')}] {n_turns} turns: {name}")
+                _summarize_chain(record)
+                results_list[idx] = record
+                _save_chains(out_path, run_id, [r for r in results_list if r is not None])
 
-        if any(_has_auth_error([], t.get("error")) for t in record["turns"]):
-            print("  Auth error - refreshing token and retrying ...")
-            if _refresh_auth(auth, env):
-                record = _run_chain(chain, auth, base_url, run_id=run_id, env=env, tunnel_pool=tunnel_pool)
+        with ThreadPoolExecutor(max_workers=parallel) as pool:
+            futures = {pool.submit(_work, i, c): c for i, c in enumerate(chains)}
+            for fut in as_completed(futures):
+                fut.result()
 
-        results.append(record)
-        _summarize_chain(record)
-        _save_chains(out_path, run_id, results)
+        results = [r for r in results_list if r is not None]
 
     return {"run_id": run_id, "total": len(results), "results": results}
 
 
 def _summarize_chain(record: dict) -> None:
     for t in record["turns"]:
-        traces = t.get("cortex_traces") or []
+        od_fdl = t.get("od_fdl_results") or []
         usage = t.get("usage") or {}
         print(
             f"  turn {t['turn_index']}"
             f" | {t['duration_ms']/1000:.1f}s"
-            f" | sql_calls={len(traces)}"
+            f" | sql_results={len(od_fdl)}"
             f" | tokens={usage.get('total_tokens', 0)}"
             f" | err={t.get('error')}"
         )

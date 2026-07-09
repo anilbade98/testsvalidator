@@ -5,9 +5,14 @@
     "flow": "fdl",
     "complexity": "basic",
     "priority": true,
-    "expected_tools": ["get_fdl_data"],
+    "expected_tools": [
+      "get_fdl_data"
+    ],
     "golden_answer": null,
-    "tags": ["csat", "basic-analytics"],
+    "tags": [
+      "csat",
+      "basic-analytics"
+    ],
     "multi_turn": false
   },
   {
@@ -16,9 +21,14 @@
     "flow": "fdl",
     "complexity": "basic",
     "priority": true,
-    "expected_tools": ["get_fdl_data"],
+    "expected_tools": [
+      "get_fdl_data"
+    ],
     "golden_answer": null,
-    "tags": ["aht", "acd"],
+    "tags": [
+      "aht",
+      "acd"
+    ],
     "multi_turn": false
   },
   {
@@ -27,9 +37,14 @@
     "flow": "fdl",
     "complexity": "basic",
     "priority": true,
-    "expected_tools": ["get_fdl_data"],
+    "expected_tools": [
+      "get_fdl_data"
+    ],
     "golden_answer": null,
-    "tags": ["quality-management", "evaluations"],
+    "tags": [
+      "quality-management",
+      "evaluations"
+    ],
     "multi_turn": false
   },
   {
@@ -38,9 +53,14 @@
     "flow": "fdl",
     "complexity": "basic",
     "priority": false,
-    "expected_tools": ["get_fdl_data"],
+    "expected_tools": [
+      "get_fdl_data"
+    ],
     "golden_answer": null,
-    "tags": ["acd", "volume"],
+    "tags": [
+      "acd",
+      "volume"
+    ],
     "multi_turn": false
   },
   {
@@ -49,9 +69,14 @@
     "flow": "fdl",
     "complexity": "basic",
     "priority": false,
-    "expected_tools": ["get_fdl_data"],
+    "expected_tools": [
+      "get_fdl_data"
+    ],
     "golden_answer": null,
-    "tags": ["quality-management", "coaching"],
+    "tags": [
+      "quality-management",
+      "coaching"
+    ],
     "multi_turn": false
   },
   {
@@ -60,9 +85,14 @@
     "flow": "fdl",
     "complexity": "basic",
     "priority": true,
-    "expected_tools": ["get_fdl_data"],
+    "expected_tools": [
+      "get_fdl_data"
+    ],
     "golden_answer": null,
-    "tags": ["desktop-analytics", "productivity"],
+    "tags": [
+      "desktop-analytics",
+      "productivity"
+    ],
     "multi_turn": false
   },
   {
@@ -71,9 +101,15 @@
     "flow": "fdl",
     "complexity": "intermediate",
     "priority": true,
-    "expected_tools": ["get_fdl_data"],
+    "expected_tools": [
+      "get_fdl_data"
+    ],
     "golden_answer": null,
-    "tags": ["csat", "acd", "correlation"],
+    "tags": [
+      "csat",
+      "acd",
+      "correlation"
+    ],
     "multi_turn": false
   },
   {
@@ -82,9 +118,14 @@
     "flow": "fdl",
     "complexity": "basic",
     "priority": true,
-    "expected_tools": ["get_fdl_data"],
+    "expected_tools": [
+      "get_fdl_data"
+    ],
     "golden_answer": null,
-    "tags": ["fcr", "basic-analytics"],
+    "tags": [
+      "fcr",
+      "basic-analytics"
+    ],
     "multi_turn": false
   },
   {
@@ -93,9 +134,14 @@
     "flow": "fdl",
     "complexity": "advanced",
     "priority": true,
-    "expected_tools": ["get_fdl_data"],
+    "expected_tools": [
+      "get_fdl_data"
+    ],
     "golden_answer": null,
-    "tags": ["transcripts", "competitive"],
+    "tags": [
+      "transcripts",
+      "competitive"
+    ],
     "multi_turn": false
   },
   {
@@ -104,9 +150,14 @@
     "flow": "fdl",
     "complexity": "basic",
     "priority": false,
-    "expected_tools": ["get_fdl_data"],
+    "expected_tools": [
+      "get_fdl_data"
+    ],
     "golden_answer": null,
-    "tags": ["agent-performance", "quality-management"],
+    "tags": [
+      "agent-performance",
+      "quality-management"
+    ],
     "multi_turn": false
   },
   {
@@ -115,9 +166,14 @@
     "flow": "fdl",
     "complexity": "advanced",
     "priority": false,
-    "expected_tools": ["get_fdl_data"],
+    "expected_tools": [
+      "get_fdl_data"
+    ],
     "golden_answer": null,
-    "tags": ["wfm", "staffing"],
+    "tags": [
+      "wfm",
+      "staffing"
+    ],
     "multi_turn": false
   },
   {
@@ -126,9 +182,14 @@
     "flow": "fdl",
     "complexity": "advanced",
     "priority": false,
-    "expected_tools": ["get_fdl_data"],
+    "expected_tools": [
+      "get_fdl_data"
+    ],
     "golden_answer": null,
-    "tags": ["csat", "root-cause"],
+    "tags": [
+      "csat",
+      "root-cause"
+    ],
     "multi_turn": false
   },
   {
@@ -137,9 +198,14 @@
     "flow": "fdl",
     "complexity": "basic",
     "priority": false,
-    "expected_tools": ["get_fdl_data"],
+    "expected_tools": [
+      "get_fdl_data"
+    ],
     "golden_answer": null,
-    "tags": ["acd", "abandonment"],
+    "tags": [
+      "acd",
+      "abandonment"
+    ],
     "multi_turn": false
   },
   {
@@ -148,9 +214,14 @@
     "flow": "fdl",
     "complexity": "basic",
     "priority": false,
-    "expected_tools": ["get_fdl_data"],
+    "expected_tools": [
+      "get_fdl_data"
+    ],
     "golden_answer": null,
-    "tags": ["desktop-analytics", "productivity"],
+    "tags": [
+      "desktop-analytics",
+      "productivity"
+    ],
     "multi_turn": false
   },
   {
@@ -159,9 +230,14 @@
     "flow": "fdl",
     "complexity": "basic",
     "priority": false,
-    "expected_tools": ["get_fdl_data"],
+    "expected_tools": [
+      "get_fdl_data"
+    ],
     "golden_answer": null,
-    "tags": ["desktop-analytics", "productivity"],
+    "tags": [
+      "desktop-analytics",
+      "productivity"
+    ],
     "multi_turn": false
   },
   {
@@ -170,9 +246,14 @@
     "flow": "fdl",
     "complexity": "basic",
     "priority": false,
-    "expected_tools": ["get_fdl_data"],
+    "expected_tools": [
+      "get_fdl_data"
+    ],
     "golden_answer": null,
-    "tags": ["agent-performance", "quality-management"],
+    "tags": [
+      "agent-performance",
+      "quality-management"
+    ],
     "multi_turn": false
   },
   {
@@ -181,9 +262,15 @@
     "flow": "fdl",
     "complexity": "intermediate",
     "priority": false,
-    "expected_tools": ["get_fdl_data"],
+    "expected_tools": [
+      "get_fdl_data"
+    ],
     "golden_answer": null,
-    "tags": ["acw", "acd", "efficiency"],
+    "tags": [
+      "acw",
+      "acd",
+      "efficiency"
+    ],
     "multi_turn": false
   },
   {
@@ -192,9 +279,15 @@
     "flow": "fdl",
     "complexity": "advanced",
     "priority": true,
-    "expected_tools": ["get_fdl_data"],
+    "expected_tools": [
+      "get_fdl_data"
+    ],
     "golden_answer": null,
-    "tags": ["agent-performance", "quality-management", "coaching"],
+    "tags": [
+      "agent-performance",
+      "quality-management",
+      "coaching"
+    ],
     "multi_turn": false
   },
   {
@@ -203,9 +296,15 @@
     "flow": "fdl",
     "complexity": "advanced",
     "priority": true,
-    "expected_tools": ["get_fdl_data"],
+    "expected_tools": [
+      "get_fdl_data"
+    ],
     "golden_answer": null,
-    "tags": ["acd", "ai-agents", "escalation"],
+    "tags": [
+      "acd",
+      "ai-agents",
+      "escalation"
+    ],
     "multi_turn": false
   },
   {
@@ -214,9 +313,14 @@
     "flow": "fdl",
     "complexity": "advanced",
     "priority": false,
-    "expected_tools": ["get_fdl_data"],
+    "expected_tools": [
+      "get_fdl_data"
+    ],
     "golden_answer": null,
-    "tags": ["csat", "acd"],
+    "tags": [
+      "csat",
+      "acd"
+    ],
     "multi_turn": false
   },
   {
@@ -225,9 +329,15 @@
     "flow": "fdl",
     "complexity": "advanced",
     "priority": false,
-    "expected_tools": ["get_fdl_data"],
+    "expected_tools": [
+      "get_fdl_data"
+    ],
     "golden_answer": null,
-    "tags": ["aht", "quality-management", "correlation"],
+    "tags": [
+      "aht",
+      "quality-management",
+      "correlation"
+    ],
     "multi_turn": false
   },
   {
@@ -236,9 +346,14 @@
     "flow": "od",
     "complexity": "basic",
     "priority": true,
-    "expected_tools": ["get_athena_data"],
+    "expected_tools": [
+      "get_athena_data"
+    ],
     "golden_answer": null,
-    "tags": ["kb", "usage"],
+    "tags": [
+      "kb",
+      "usage"
+    ],
     "multi_turn": false
   },
   {
@@ -247,9 +362,14 @@
     "flow": "od",
     "complexity": "intermediate",
     "priority": false,
-    "expected_tools": ["get_athena_data"],
+    "expected_tools": [
+      "get_athena_data"
+    ],
     "golden_answer": null,
-    "tags": ["kb", "effectiveness"],
+    "tags": [
+      "kb",
+      "effectiveness"
+    ],
     "multi_turn": false
   },
   {
@@ -258,9 +378,14 @@
     "flow": "od",
     "complexity": "basic",
     "priority": false,
-    "expected_tools": ["get_athena_data"],
+    "expected_tools": [
+      "get_athena_data"
+    ],
     "golden_answer": null,
-    "tags": ["kb", "feedback"],
+    "tags": [
+      "kb",
+      "feedback"
+    ],
     "multi_turn": false
   },
   {
@@ -269,9 +394,14 @@
     "flow": "od",
     "complexity": "intermediate",
     "priority": false,
-    "expected_tools": ["get_athena_data"],
+    "expected_tools": [
+      "get_athena_data"
+    ],
     "golden_answer": null,
-    "tags": ["kb", "billing"],
+    "tags": [
+      "kb",
+      "billing"
+    ],
     "multi_turn": false
   },
   {
@@ -280,9 +410,14 @@
     "flow": "od",
     "complexity": "basic",
     "priority": false,
-    "expected_tools": ["get_athena_data"],
+    "expected_tools": [
+      "get_athena_data"
+    ],
     "golden_answer": null,
-    "tags": ["kb", "trends"],
+    "tags": [
+      "kb",
+      "trends"
+    ],
     "multi_turn": false
   },
   {
@@ -291,9 +426,14 @@
     "flow": "od",
     "complexity": "basic",
     "priority": false,
-    "expected_tools": ["get_athena_data"],
+    "expected_tools": [
+      "get_athena_data"
+    ],
     "golden_answer": null,
-    "tags": ["summaries", "interactions"],
+    "tags": [
+      "summaries",
+      "interactions"
+    ],
     "multi_turn": false
   },
   {
@@ -302,9 +442,14 @@
     "flow": "od",
     "complexity": "basic",
     "priority": false,
-    "expected_tools": ["get_athena_data"],
+    "expected_tools": [
+      "get_athena_data"
+    ],
     "golden_answer": null,
-    "tags": ["escalations", "trends"],
+    "tags": [
+      "escalations",
+      "trends"
+    ],
     "multi_turn": false
   },
   {
@@ -313,9 +458,14 @@
     "flow": "od",
     "complexity": "basic",
     "priority": false,
-    "expected_tools": ["get_athena_data"],
+    "expected_tools": [
+      "get_athena_data"
+    ],
     "golden_answer": null,
-    "tags": ["evaluations", "quality"],
+    "tags": [
+      "evaluations",
+      "quality"
+    ],
     "multi_turn": false
   },
   {
@@ -324,9 +474,14 @@
     "flow": "od",
     "complexity": "intermediate",
     "priority": false,
-    "expected_tools": ["get_athena_data"],
+    "expected_tools": [
+      "get_athena_data"
+    ],
     "golden_answer": null,
-    "tags": ["goals", "performance"],
+    "tags": [
+      "goals",
+      "performance"
+    ],
     "multi_turn": false
   },
   {
@@ -335,9 +490,14 @@
     "flow": "od",
     "complexity": "intermediate",
     "priority": false,
-    "expected_tools": ["get_athena_data"],
+    "expected_tools": [
+      "get_athena_data"
+    ],
     "golden_answer": null,
-    "tags": ["summaries", "topics"],
+    "tags": [
+      "summaries",
+      "topics"
+    ],
     "multi_turn": false
   },
   {
@@ -346,9 +506,14 @@
     "flow": "od",
     "complexity": "basic",
     "priority": false,
-    "expected_tools": ["get_athena_data"],
+    "expected_tools": [
+      "get_athena_data"
+    ],
     "golden_answer": null,
-    "tags": ["feedback", "ai"],
+    "tags": [
+      "feedback",
+      "ai"
+    ],
     "multi_turn": false
   },
   {
@@ -357,9 +522,14 @@
     "flow": "ao",
     "complexity": "basic",
     "priority": true,
-    "expected_tools": ["ask_automation_opportunity"],
+    "expected_tools": [
+      "ask_automation_opportunity"
+    ],
     "golden_answer": null,
-    "tags": ["automation", "opportunities"],
+    "tags": [
+      "automation",
+      "opportunities"
+    ],
     "multi_turn": false
   },
   {
@@ -368,9 +538,14 @@
     "flow": "ao",
     "complexity": "basic",
     "priority": false,
-    "expected_tools": ["ask_automation_opportunity"],
+    "expected_tools": [
+      "ask_automation_opportunity"
+    ],
     "golden_answer": null,
-    "tags": ["automation", "volume"],
+    "tags": [
+      "automation",
+      "volume"
+    ],
     "multi_turn": false
   },
   {
@@ -379,9 +554,14 @@
     "flow": "ao",
     "complexity": "intermediate",
     "priority": true,
-    "expected_tools": ["ask_automation_opportunity"],
+    "expected_tools": [
+      "ask_automation_opportunity"
+    ],
     "golden_answer": null,
-    "tags": ["automation", "roi"],
+    "tags": [
+      "automation",
+      "roi"
+    ],
     "multi_turn": false
   },
   {
@@ -390,9 +570,14 @@
     "flow": "ao",
     "complexity": "intermediate",
     "priority": false,
-    "expected_tools": ["ask_automation_opportunity"],
+    "expected_tools": [
+      "ask_automation_opportunity"
+    ],
     "golden_answer": null,
-    "tags": ["automation", "billing"],
+    "tags": [
+      "automation",
+      "billing"
+    ],
     "multi_turn": false
   },
   {
@@ -401,9 +586,14 @@
     "flow": "ao",
     "complexity": "intermediate",
     "priority": false,
-    "expected_tools": ["ask_automation_opportunity"],
+    "expected_tools": [
+      "ask_automation_opportunity"
+    ],
     "golden_answer": null,
-    "tags": ["automation", "cost"],
+    "tags": [
+      "automation",
+      "cost"
+    ],
     "multi_turn": false
   },
   {
@@ -412,9 +602,14 @@
     "flow": "ao",
     "complexity": "advanced",
     "priority": false,
-    "expected_tools": ["ask_automation_opportunity"],
+    "expected_tools": [
+      "ask_automation_opportunity"
+    ],
     "golden_answer": null,
-    "tags": ["automation", "aht"],
+    "tags": [
+      "automation",
+      "aht"
+    ],
     "multi_turn": false
   },
   {
@@ -423,9 +618,15 @@
     "flow": "ao",
     "complexity": "advanced",
     "priority": false,
-    "expected_tools": ["ask_automation_opportunity"],
+    "expected_tools": [
+      "ask_automation_opportunity"
+    ],
     "golden_answer": null,
-    "tags": ["automation", "ai-agents", "escalation"],
+    "tags": [
+      "automation",
+      "ai-agents",
+      "escalation"
+    ],
     "multi_turn": false
   },
   {
@@ -434,9 +635,15 @@
     "flow": "ao",
     "complexity": "advanced",
     "priority": false,
-    "expected_tools": ["ask_automation_opportunity"],
+    "expected_tools": [
+      "ask_automation_opportunity"
+    ],
     "golden_answer": null,
-    "tags": ["automation", "ai-agents", "knowledge-gaps"],
+    "tags": [
+      "automation",
+      "ai-agents",
+      "knowledge-gaps"
+    ],
     "multi_turn": false
   },
   {
@@ -445,9 +652,14 @@
     "flow": "rca",
     "complexity": "basic",
     "priority": true,
-    "expected_tools": ["query_anomalies"],
+    "expected_tools": [
+      "query_anomalies"
+    ],
     "golden_answer": null,
-    "tags": ["anomalies", "monitoring"],
+    "tags": [
+      "anomalies",
+      "monitoring"
+    ],
     "multi_turn": false
   },
   {
@@ -456,9 +668,14 @@
     "flow": "rca",
     "complexity": "basic",
     "priority": true,
-    "expected_tools": ["query_anomalies"],
+    "expected_tools": [
+      "query_anomalies"
+    ],
     "golden_answer": null,
-    "tags": ["anomalies", "csat"],
+    "tags": [
+      "anomalies",
+      "csat"
+    ],
     "multi_turn": false
   },
   {
@@ -467,9 +684,15 @@
     "flow": "rca",
     "complexity": "intermediate",
     "priority": false,
-    "expected_tools": ["query_anomalies"],
+    "expected_tools": [
+      "query_anomalies"
+    ],
     "golden_answer": null,
-    "tags": ["anomalies", "aht", "root-cause"],
+    "tags": [
+      "anomalies",
+      "aht",
+      "root-cause"
+    ],
     "multi_turn": false
   },
   {
@@ -478,9 +701,14 @@
     "flow": "rca",
     "complexity": "basic",
     "priority": false,
-    "expected_tools": ["query_anomalies"],
+    "expected_tools": [
+      "query_anomalies"
+    ],
     "golden_answer": null,
-    "tags": ["anomalies", "abandonment"],
+    "tags": [
+      "anomalies",
+      "abandonment"
+    ],
     "multi_turn": false
   },
   {
@@ -489,9 +717,14 @@
     "flow": "rca",
     "complexity": "intermediate",
     "priority": false,
-    "expected_tools": ["query_anomalies"],
+    "expected_tools": [
+      "query_anomalies"
+    ],
     "golden_answer": null,
-    "tags": ["anomalies", "agent-behavior"],
+    "tags": [
+      "anomalies",
+      "agent-behavior"
+    ],
     "multi_turn": false
   },
   {
@@ -502,7 +735,11 @@
     "priority": true,
     "expected_tools": [],
     "golden_answer": null,
-    "tags": ["advisory", "ai-agents", "agent-performance"],
+    "tags": [
+      "advisory",
+      "ai-agents",
+      "agent-performance"
+    ],
     "multi_turn": false
   },
   {
@@ -513,7 +750,11 @@
     "priority": false,
     "expected_tools": [],
     "golden_answer": null,
-    "tags": ["advisory", "agent-performance", "dashboard"],
+    "tags": [
+      "advisory",
+      "agent-performance",
+      "dashboard"
+    ],
     "multi_turn": false
   },
   {
@@ -524,7 +765,11 @@
     "priority": false,
     "expected_tools": [],
     "golden_answer": null,
-    "tags": ["advisory", "wfm", "agent-performance"],
+    "tags": [
+      "advisory",
+      "wfm",
+      "agent-performance"
+    ],
     "multi_turn": false
   },
   {
@@ -535,7 +780,11 @@
     "priority": false,
     "expected_tools": [],
     "golden_answer": null,
-    "tags": ["advisory", "escalation", "root-cause"],
+    "tags": [
+      "advisory",
+      "escalation",
+      "root-cause"
+    ],
     "multi_turn": false
   },
   {
@@ -546,7 +795,10 @@
     "priority": true,
     "expected_tools": [],
     "golden_answer": null,
-    "tags": ["advisory", "automation"],
+    "tags": [
+      "advisory",
+      "automation"
+    ],
     "multi_turn": false
   },
   {
@@ -557,7 +809,10 @@
     "priority": true,
     "expected_tools": [],
     "golden_answer": null,
-    "tags": ["advisory", "ai-agents"],
+    "tags": [
+      "advisory",
+      "ai-agents"
+    ],
     "multi_turn": false
   },
   {
@@ -568,7 +823,10 @@
     "priority": false,
     "expected_tools": [],
     "golden_answer": null,
-    "tags": ["advisory", "efficiency"],
+    "tags": [
+      "advisory",
+      "efficiency"
+    ],
     "multi_turn": false
   },
   {
@@ -579,7 +837,10 @@
     "priority": true,
     "expected_tools": [],
     "golden_answer": null,
-    "tags": ["advisory", "aht"],
+    "tags": [
+      "advisory",
+      "aht"
+    ],
     "multi_turn": false
   },
   {
@@ -590,7 +851,10 @@
     "priority": false,
     "expected_tools": [],
     "golden_answer": null,
-    "tags": ["advisory", "coaching"],
+    "tags": [
+      "advisory",
+      "coaching"
+    ],
     "multi_turn": false
   },
   {
@@ -601,7 +865,10 @@
     "priority": false,
     "expected_tools": [],
     "golden_answer": null,
-    "tags": ["advisory", "fcr"],
+    "tags": [
+      "advisory",
+      "fcr"
+    ],
     "multi_turn": false
   },
   {
@@ -612,7 +879,10 @@
     "priority": false,
     "expected_tools": [],
     "golden_answer": null,
-    "tags": ["advisory", "coaching"],
+    "tags": [
+      "advisory",
+      "coaching"
+    ],
     "multi_turn": false
   },
   {
@@ -623,7 +893,11 @@
     "priority": false,
     "expected_tools": [],
     "golden_answer": null,
-    "tags": ["advisory", "copilot", "roi"],
+    "tags": [
+      "advisory",
+      "copilot",
+      "roi"
+    ],
     "multi_turn": false
   },
   {
@@ -634,7 +908,11 @@
     "priority": false,
     "expected_tools": [],
     "golden_answer": null,
-    "tags": ["advisory", "efficiency", "quality"],
+    "tags": [
+      "advisory",
+      "efficiency",
+      "quality"
+    ],
     "multi_turn": false
   },
   {
@@ -645,7 +923,11 @@
     "priority": true,
     "expected_tools": [],
     "golden_answer": null,
-    "tags": ["advisory", "fcr", "root-cause"],
+    "tags": [
+      "advisory",
+      "fcr",
+      "root-cause"
+    ],
     "multi_turn": false
   },
   {
@@ -654,9 +936,17 @@
     "flow": "mixed",
     "complexity": "advanced",
     "priority": false,
-    "expected_tools": ["get_fdl_data", "get_athena_data"],
+    "expected_tools": [
+      "get_fdl_data",
+      "get_athena_data"
+    ],
     "golden_answer": null,
-    "tags": ["kb", "csat", "correlation", "mixed"],
+    "tags": [
+      "kb",
+      "csat",
+      "correlation",
+      "mixed"
+    ],
     "multi_turn": false
   },
   {
@@ -665,9 +955,16 @@
     "flow": "mixed",
     "complexity": "advanced",
     "priority": false,
-    "expected_tools": ["get_fdl_data", "get_athena_data"],
+    "expected_tools": [
+      "get_fdl_data",
+      "get_athena_data"
+    ],
     "golden_answer": null,
-    "tags": ["kb", "quality-management", "mixed"],
+    "tags": [
+      "kb",
+      "quality-management",
+      "mixed"
+    ],
     "multi_turn": false
   },
   {
@@ -676,9 +973,16 @@
     "flow": "mixed",
     "complexity": "advanced",
     "priority": false,
-    "expected_tools": ["get_fdl_data", "get_athena_data"],
+    "expected_tools": [
+      "get_fdl_data",
+      "get_athena_data"
+    ],
     "golden_answer": null,
-    "tags": ["kb", "csat", "mixed"],
+    "tags": [
+      "kb",
+      "csat",
+      "mixed"
+    ],
     "multi_turn": false
   },
   {
@@ -687,9 +991,16 @@
     "flow": "mixed",
     "complexity": "advanced",
     "priority": false,
-    "expected_tools": ["get_fdl_data", "get_athena_data"],
+    "expected_tools": [
+      "get_fdl_data",
+      "get_athena_data"
+    ],
     "golden_answer": null,
-    "tags": ["kb", "aht", "mixed"],
+    "tags": [
+      "kb",
+      "aht",
+      "mixed"
+    ],
     "multi_turn": false
   },
   {
@@ -698,9 +1009,16 @@
     "flow": "mixed",
     "complexity": "advanced",
     "priority": false,
-    "expected_tools": ["get_fdl_data", "ask_automation_opportunity"],
+    "expected_tools": [
+      "get_fdl_data",
+      "ask_automation_opportunity"
+    ],
     "golden_answer": null,
-    "tags": ["volume", "automation", "mixed"],
+    "tags": [
+      "volume",
+      "automation",
+      "mixed"
+    ],
     "multi_turn": false
   },
   {
@@ -709,9 +1027,17 @@
     "flow": "mixed",
     "complexity": "advanced",
     "priority": false,
-    "expected_tools": ["get_fdl_data", "get_athena_data"],
+    "expected_tools": [
+      "get_fdl_data",
+      "get_athena_data"
+    ],
     "golden_answer": null,
-    "tags": ["kb", "quality-management", "correlation", "mixed"],
+    "tags": [
+      "kb",
+      "quality-management",
+      "correlation",
+      "mixed"
+    ],
     "multi_turn": false
   },
   {
@@ -720,9 +1046,17 @@
     "flow": "mixed",
     "complexity": "advanced",
     "priority": false,
-    "expected_tools": ["get_fdl_data", "get_athena_data"],
+    "expected_tools": [
+      "get_fdl_data",
+      "get_athena_data"
+    ],
     "golden_answer": null,
-    "tags": ["kb", "quality-management", "topics", "mixed"],
+    "tags": [
+      "kb",
+      "quality-management",
+      "topics",
+      "mixed"
+    ],
     "multi_turn": false
   },
   {
@@ -731,9 +1065,14 @@
     "flow": "context",
     "complexity": "basic",
     "priority": false,
-    "expected_tools": ["get_current_data"],
+    "expected_tools": [
+      "get_current_data"
+    ],
     "golden_answer": null,
-    "tags": ["context", "ui-tree"],
+    "tags": [
+      "context",
+      "ui-tree"
+    ],
     "multi_turn": false,
     "context_fixture": {
       "uiTree": {
@@ -742,11 +1081,26 @@
         "metric": "csat_score",
         "period": "last_30_days",
         "data_points": [
-          {"date": "2026-05-17", "value": 4.7},
-          {"date": "2026-05-24", "value": 4.5},
-          {"date": "2026-05-31", "value": 4.3},
-          {"date": "2026-06-07", "value": 4.1},
-          {"date": "2026-06-14", "value": 4.0}
+          {
+            "date": "2026-05-17",
+            "value": 4.7
+          },
+          {
+            "date": "2026-05-24",
+            "value": 4.5
+          },
+          {
+            "date": "2026-05-31",
+            "value": 4.3
+          },
+          {
+            "date": "2026-06-07",
+            "value": 4.1
+          },
+          {
+            "date": "2026-06-14",
+            "value": 4.0
+          }
         ]
       }
     }
@@ -757,9 +1111,14 @@
     "flow": "context",
     "complexity": "intermediate",
     "priority": false,
-    "expected_tools": ["get_current_data"],
+    "expected_tools": [
+      "get_current_data"
+    ],
     "golden_answer": null,
-    "tags": ["context", "dashboard-data"],
+    "tags": [
+      "context",
+      "dashboard-data"
+    ],
     "multi_turn": false,
     "context_fixture": {
       "data": {
@@ -769,9 +1128,18 @@
         "unit": "seconds",
         "period": "this_week_vs_last_week",
         "breakdown_by_team": [
-          {"team": "billing", "aht": 530},
-          {"team": "tech-support", "aht": 512},
-          {"team": "general", "aht": 420}
+          {
+            "team": "billing",
+            "aht": 530
+          },
+          {
+            "team": "tech-support",
+            "aht": 512
+          },
+          {
+            "team": "general",
+            "aht": 420
+          }
         ]
       }
     }
@@ -782,19 +1150,38 @@
     "flow": "context",
     "complexity": "advanced",
     "priority": false,
-    "expected_tools": ["get_current_data"],
+    "expected_tools": [
+      "get_current_data"
+    ],
     "golden_answer": null,
-    "tags": ["context", "mfe"],
+    "tags": [
+      "context",
+      "mfe"
+    ],
     "multi_turn": false,
     "context_fixture": {
       "mfeState": {
         "activeMfe": "supervisorDashboard",
         "view": "teamPerformance",
-        "filters": {"period": "this_week"},
+        "filters": {
+          "period": "this_week"
+        },
         "widgets": {
-          "csat": {"value": 3.9, "trend": "down", "threshold": 4.0},
-          "aht": {"value": 510, "trend": "up", "threshold": 450},
-          "fcr": {"value": 0.72, "trend": "stable", "threshold": 0.80}
+          "csat": {
+            "value": 3.9,
+            "trend": "down",
+            "threshold": 4.0
+          },
+          "aht": {
+            "value": 510,
+            "trend": "up",
+            "threshold": 450
+          },
+          "fcr": {
+            "value": 0.72,
+            "trend": "stable",
+            "threshold": 0.8
+          }
         }
       }
     }
@@ -805,20 +1192,52 @@
     "flow": "refresh",
     "complexity": "basic",
     "priority": false,
-    "expected_tools": ["get_fdl_data"],
+    "expected_tools": [
+      "get_fdl_data"
+    ],
     "golden_answer": null,
-    "tags": ["refresh", "fdl", "csat"],
+    "tags": [
+      "refresh",
+      "fdl",
+      "csat"
+    ],
     "multi_turn": false,
     "context_fixture": {
       "data": {
         "fdl": [
           {
-            "question": "What's our average CSAT this month?",
-            "sql": "SELECT AVG(csat_score) FROM CallSegments WHERE tenant_id = ? AND MONTH(start_time) = MONTH(CURRENT_DATE)",
-            "columns": ["avg_csat"],
-            "results": [{"avg_csat": 4.2}]
+            "columnMetaData": [
+              {
+                "columnName": "TotalSegments",
+                "columnType": "Number"
+              },
+              {
+                "columnName": "AvgCSAT",
+                "columnType": "Number"
+              },
+              {
+                "columnName": "AvgEmpathy",
+                "columnType": "Number"
+              },
+              {
+                "columnName": "AvgOwnership",
+                "columnType": "Number"
+              }
+            ],
+            "resultList": [
+              [
+                12534,
+                4.2,
+                5.1,
+                4.8
+              ]
+            ],
+            "title": "Overall Average CSAT and Behavioral Scores – Last 30 Days",
+            "schema": "CALL_SEGMENT",
+            "questionUsed": "What's our average CSAT this month?"
           }
-        ]
+        ],
+        "od": []
       }
     }
   },
@@ -828,23 +1247,64 @@
     "flow": "refresh",
     "complexity": "basic",
     "priority": false,
-    "expected_tools": ["get_athena_data"],
+    "expected_tools": [
+      "get_athena_data"
+    ],
     "golden_answer": null,
-    "tags": ["refresh", "od", "kb"],
+    "tags": [
+      "refresh",
+      "od",
+      "kb"
+    ],
     "multi_turn": false,
     "context_fixture": {
       "data": {
         "od": [
           {
-            "question": "Which KB articles are being used most frequently?",
-            "sql": "SELECT article_id, title, COUNT(*) as usage_count FROM kb_queries GROUP BY article_id, title ORDER BY usage_count DESC LIMIT 10",
-            "columns": ["article_id", "title", "usage_count"],
-            "results": [
-              {"article_id": "kb-001", "title": "Reset Password", "usage_count": 342},
-              {"article_id": "kb-002", "title": "Billing FAQ", "usage_count": 289}
-            ]
+            "columnMetaData": [
+              {
+                "columnName": "kbansweruid",
+                "columnType": "Varchar"
+              },
+              {
+                "columnName": "total_queries",
+                "columnType": "Number"
+              },
+              {
+                "columnName": "unique_agents",
+                "columnType": "Number"
+              },
+              {
+                "columnName": "avg_similarity",
+                "columnType": "Number"
+              }
+            ],
+            "resultList": [
+              [
+                "3f8a1d2e",
+                342,
+                87,
+                0.82
+              ],
+              [
+                "7c4b9f1a",
+                289,
+                64,
+                0.74
+              ],
+              [
+                "1e5d3c8b",
+                201,
+                55,
+                0.79
+              ]
+            ],
+            "title": "Top KB Articles by Usage – Last 30 Days",
+            "schema": "kbqueries",
+            "questionUsed": "Which KB articles are being used most frequently?"
           }
-        ]
+        ],
+        "fdl": []
       }
     }
   },
@@ -854,21 +1314,39 @@
     "flow": "refresh",
     "complexity": "basic",
     "priority": false,
-    "expected_tools": ["ask_automation_opportunity"],
+    "expected_tools": [
+      "ask_automation_opportunity"
+    ],
     "golden_answer": null,
-    "tags": ["refresh", "ao"],
+    "tags": [
+      "refresh",
+      "ao"
+    ],
     "multi_turn": false,
     "context_fixture": {
       "data": {
-        "ao": [
-          {
-            "question": "What are my top automation opportunities?",
-            "results": [
-              {"topic": "password_reset", "contact_volume": 1240, "automation_potential": 0.92, "estimated_savings": 18600},
-              {"topic": "billing_inquiry", "contact_volume": 890, "automation_potential": 0.75, "estimated_savings": 13350}
+        "ao": {
+          "data": {
+            "title": "Top Automation Opportunities",
+            "opportunities": [
+              {
+                "topic": "password_reset",
+                "contact_volume": 1240,
+                "automation_potential": 0.92,
+                "estimated_savings_hrs": 18.6
+              },
+              {
+                "topic": "billing_inquiry",
+                "contact_volume": 890,
+                "automation_potential": 0.75,
+                "estimated_savings_hrs": 13.4
+              }
             ]
-          }
-        ]
+          },
+          "buttons": [],
+          "error": null,
+          "questionUsed": "What are my top automation opportunities?"
+        }
       }
     }
   },
@@ -878,20 +1356,42 @@
     "flow": "refresh",
     "complexity": "basic",
     "priority": false,
-    "expected_tools": ["query_anomalies"],
+    "expected_tools": [
+      "query_anomalies"
+    ],
     "golden_answer": null,
-    "tags": ["refresh", "rca", "anomalies"],
+    "tags": [
+      "refresh",
+      "rca",
+      "anomalies"
+    ],
     "multi_turn": false,
     "context_fixture": {
       "data": {
-        "rca": [
-          {
-            "question": "Are there any anomalies in my contact center right now?",
-            "results": [
-              {"metric": "aht", "anomaly_type": "spike", "detected_at": "2026-06-16T14:00:00Z", "severity": "medium"}
+        "rca": {
+          "data": {
+            "anomalies": [
+              {
+                "metric": "avg_handle_time",
+                "anomaly_type": "spike",
+                "detected_at": "2026-06-16T14:00:00Z",
+                "severity": "medium",
+                "current_value": 487,
+                "baseline": 412
+              },
+              {
+                "metric": "abandonment_rate",
+                "anomaly_type": "increase",
+                "detected_at": "2026-06-16T15:30:00Z",
+                "severity": "low",
+                "current_value": 0.08,
+                "baseline": 0.05
+              }
             ]
-          }
-        ]
+          },
+          "row_count": 2,
+          "questionUsed": "Are there any anomalies in my contact center right now?"
+        }
       }
     }
   },
@@ -903,7 +1403,10 @@
     "priority": false,
     "expected_tools": [],
     "golden_answer": null,
-    "tags": ["conversational", "greeting"],
+    "tags": [
+      "conversational",
+      "greeting"
+    ],
     "multi_turn": false
   },
   {
@@ -914,7 +1417,10 @@
     "priority": false,
     "expected_tools": [],
     "golden_answer": null,
-    "tags": ["conversational", "capability"],
+    "tags": [
+      "conversational",
+      "capability"
+    ],
     "multi_turn": false
   },
   {
@@ -925,7 +1431,10 @@
     "priority": false,
     "expected_tools": [],
     "golden_answer": null,
-    "tags": ["conversational", "out-of-domain"],
+    "tags": [
+      "conversational",
+      "out-of-domain"
+    ],
     "multi_turn": false
   },
   {
@@ -936,7 +1445,10 @@
     "priority": false,
     "expected_tools": [],
     "golden_answer": null,
-    "tags": ["conversational", "out-of-domain"],
+    "tags": [
+      "conversational",
+      "out-of-domain"
+    ],
     "multi_turn": false
   }
 ]

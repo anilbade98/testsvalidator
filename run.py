@@ -121,6 +121,7 @@ def _make_filter_config(ns: argparse.Namespace) -> dict:
         "tool_flows_only": ns.tool_flows_only,
         "skip_eval": ns.skip_eval,
         "persist": ns.persist,
+        "workers": ns.workers,
     }
 
 
@@ -145,7 +146,17 @@ async def _async_main(ns: argparse.Namespace) -> int:
                 print(f"File not found: {run_path}")
                 return 1
             print(f"Re-scoring {run_path} ...")
+
         evaluate_run_file(run_path, skip_scored=ns.skip_scored)
+
+        import json as _json2
+        run_data = _json2.loads(run_path.read_text())
+        has_chains = any("chain_id" in r for r in run_data.get("results", []))
+        if has_chains:
+            print("\nRunning chain eval pass ...")
+            from tests.validator.chain_evaluator import evaluate_chain_file
+            evaluate_chain_file(run_path, skip_scored=ns.skip_scored, workers=getattr(ns, "workers", 1))
+
         agg = write_aggregated(run_path)
         print_summary(agg)
         _write_html(run_path)
@@ -215,6 +226,9 @@ async def _async_main(ns: argparse.Namespace) -> int:
     DEFAULT_OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     # ── Single-turn question run ─────────────────────────────────────────────
+    chain_ids_requested = _parse_ids(ns.chain_ids) if ns.chain_ids else None
+    question_ids_requested = _parse_ids(ns.ids)
+
     all_questions = load_questions(QUESTIONS_PATH)
     selected = select_questions(
         all_questions,
@@ -223,15 +237,26 @@ async def _async_main(ns: argparse.Namespace) -> int:
         complexity=ns.complexity,
         limit=ns.limit,
         limit_per_flow=ns.limit_per_flow,
-        ids=_parse_ids(ns.ids),
+        ids=question_ids_requested,
         priority_only=ns.priority_only,
         tool_flows_only=ns.tool_flows_only,
     )
-    if not selected:
+    if not selected and not chain_ids_requested:
         print("No questions matched the given filters. Adjust --flow / --tags / --complexity / --ids.")
         return 1
 
-    print(f"Selected {len(selected)}/{len(all_questions)} questions.")
+    total_tests = len(selected) + (len(chain_ids_requested) if chain_ids_requested else 0)
+    print(f"Selected {len(selected)} question(s)"
+          + (f", {len(chain_ids_requested)} chain(s)" if chain_ids_requested else "")
+          + f"  [total {total_tests}]")
+    print(f"Workers: {ns.workers} (collection={'parallel' if ns.workers > 1 else 'sequential'}, "
+          f"scoring={'parallel' if ns.workers > 1 else 'sequential'})")
+
+    reference_date = ns.reference_date or os.environ.get("VALIDATOR_REFERENCE_DATE")
+    if reference_date:
+        print(f"Reference date: {reference_date}")
+        os.environ["VALIDATOR_REFERENCE_DATE"] = reference_date
+
     out_path = (
         Path(ns.output)
         if ns.output
@@ -239,16 +264,43 @@ async def _async_main(ns: argparse.Namespace) -> int:
     )
     print(f"Output: {out_path}")
 
-    run = await run_all(
-        selected,
-        auth,
-        base_url=ns.base_url,
-        out_path=out_path,
-        filter_config=_make_filter_config(ns),
-        env=ns.env,
-        tunnel_pool=tunnel_pool,
-    )
-    print(f"\nCollected {len(run['results'])} records -> {out_path}")
+    run: dict = {"results": []}
+    if selected:
+        run = await run_all(
+            selected,
+            auth,
+            base_url=ns.base_url,
+            out_path=out_path,
+            filter_config=_make_filter_config(ns),
+            env=ns.env,
+            tunnel_pool=tunnel_pool,
+            workers=ns.workers,
+            reference_date=reference_date,
+        )
+
+    # ── Chain run (inline, same output file) ─────────────────────────────────
+    if chain_ids_requested and CHAINS_PATH.exists():
+        from tests.validator.chain_runner import load_chains, select_chains, run_all_chains
+        all_chains = load_chains(CHAINS_PATH)
+        selected_chains = select_chains(all_chains, chain_ids=chain_ids_requested)
+        if selected_chains:
+            print(f"\nRunning {len(selected_chains)} chain(s) ...")
+            chain_out = out_path.with_suffix(".chains.json")
+            chain_run = run_all_chains(
+                selected_chains, auth,
+                base_url=ns.base_url,
+                out_path=chain_out,
+                env=ns.env,
+                tunnel_pool=tunnel_pool,
+                parallel=ns.workers,
+                reference_date=reference_date,
+            )
+            import json as _json
+            run.setdefault("results", []).extend(chain_run.get("results", []))
+            out_path.write_text(_json.dumps(run, indent=2, default=str))
+            chain_out.unlink(missing_ok=True)
+
+    print(f"\nCollected {len(run['results'])} record(s) -> {out_path}")
 
     if ns.skip_eval:
         print("--skip-eval set; skipping LLM scoring pass.")
@@ -259,9 +311,17 @@ async def _async_main(ns: argparse.Namespace) -> int:
             tunnel_pool.stop_all()
         return 0
 
-    print("\nRunning eval pass ...")
+    eval_workers = ns.workers
+    print(f"\nRunning eval pass (workers={eval_workers}) ...")
     from tests.validator.evaluator import evaluate_run_file
-    evaluate_run_file(out_path)
+    evaluate_run_file(out_path, workers=eval_workers)
+
+    has_chains = any("chain_id" in r for r in run.get("results", []))
+    if has_chains:
+        print("\nRunning chain eval pass ...")
+        from tests.validator.chain_evaluator import evaluate_chain_file
+        evaluate_chain_file(out_path, workers=ns.workers)
+
     agg = write_aggregated(out_path)
     print_summary(agg)
     _write_html(out_path)
@@ -351,7 +411,7 @@ async def _async_chains(ns: argparse.Namespace) -> int:
 
     print("\nRunning chain eval pass ...")
     from tests.validator.chain_evaluator import evaluate_chain_file
-    evaluate_chain_file(out_path)
+    evaluate_chain_file(out_path, workers=ns.workers)
     print(f"\nChain scoring complete -> {out_path}")
 
     if tunnel_pool:
@@ -428,6 +488,17 @@ def main() -> int:
                         "localhost --base-url. Required because that combination usually "
                         "means a developer is testing on their laptop and would otherwise "
                         "pollute the dev-illum validator tables.")
+
+    p.add_argument("--workers", type=int, default=1,
+                   help="Number of parallel workers for both collection and scoring "
+                        "(default: 1 = sequential). 3-5 is a good balance; higher values "
+                        "may hit Bedrock rate limits.")
+    p.add_argument("--reference-date", dest="reference_date", type=str, default=None,
+                   metavar="YYYY-MM-DD",
+                   help="Pin 'today' to a fixed date in all agent prompts. "
+                        "Use when test data is static so date-relative queries "
+                        "('this month', 'last 30 days') stay in range. "
+                        "Example: --reference-date 2025-11-30")
 
     p.add_argument("--output", type=str, default=None,
                    help="Explicit output path (default: results/run_<timestamp>.json).")

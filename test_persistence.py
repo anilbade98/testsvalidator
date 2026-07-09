@@ -138,14 +138,13 @@ def _question_record(run_id="run-001", question_id=1, **overrides) -> dict:
         "input_tokens": 21_200,
         "output_tokens": 3_300,
         "cache_read_tokens": 0,
-        "cortex_traces": [
+        "od_fdl_results": [
             {
-                "tool_name": "execute_fdl_query",
+                "tool_name": "fdl",
                 "interpretation": "average CSAT, current month",
-                "generated_sql": "SELECT AVG(csat) FROM CallSegments WHERE …",
-                "sql_results": [{"csat": 4.3}],
-                "sql_row_count_full": 1,
-                "status": "SUCCEEDED",
+                "schema": "CALL_SEGMENT",
+                "column_meta": [{"columnName": "csat"}],
+                "rows": [[4.3]],
             }
         ],
         "agent_response_score": 0.91,
@@ -156,7 +155,7 @@ def _question_record(run_id="run-001", question_id=1, **overrides) -> dict:
         "interpretation_reason": "Interpretation matches intent.",
         "sql_correctness_score": 0.87,
         "sql_correctness_passed": True,
-        "sql_per_trace_scores": [{"sql_index": 0, "score": 0.87, "passed": True}],
+        "sql_per_trace_scores": [{"source": "fdl", "sql_score": 0.87, "sql_passed": True}],
         "regression_flag": False,
     }
     base.update(overrides)
@@ -460,20 +459,19 @@ def _local_run_json(run_id="run_20260624_120000", env="dev", **overrides) -> dic
                     "output_tokens": 3_300,
                     "cache_read_tokens": 0,
                 },
-                "cortex_traces": [
+                "od_fdl_results": [
                     {
-                        "tool_name": "execute_fdl_query",
+                        "tool_name": "fdl",
                         "interpretation": "average CSAT, current month",
-                        "generated_sql": "SELECT AVG(csat) FROM CallSegments ...",
-                        "sql_results": [{"csat": 4.3}],
-                        "sql_row_count_full": 1,
-                        "status": "SUCCEEDED",
+                        "schema": "CALL_SEGMENT",
+                        "column_meta": [{"columnName": "csat"}],
+                        "rows": [[4.3]],
                     }
                 ],
                 "eval": {
                     "agent_response": {"score": 0.91, "passed": True, "reason": "Direct."},
                     "interpretation_coverage": {"score": 0.84, "passed": True, "reason": "OK."},
-                    "per_trace": [{"sql_score": 0.87, "sql_passed": True, "sql_reason": "OK."}],
+                    "per_trace": [{"source": "fdl", "sql_score": 0.87, "sql_passed": True, "sql_reason": "OK."}],
                     "tool_compliance": {"compliant": True},
                 },
                 "error": None,
@@ -488,7 +486,7 @@ def _local_run_json(run_id="run_20260624_120000", env="dev", **overrides) -> dic
                 "duration_ms": 1_500,
                 "turn_count": 1,
                 "usage": {"total_tokens": 500, "input_tokens": 400, "output_tokens": 100},
-                "cortex_traces": [],
+                "od_fdl_results": [],
                 "eval": {
                     "agent_response": {"score": 0.95, "passed": True, "reason": "Greeting OK."},
                     # conversational flow: no interpretation / per_trace
@@ -584,7 +582,7 @@ class TestBuildQuestionRecord:
         assert rec["interpretation_score"] == 0.84
         assert rec["sql_correctness_score"] == 0.87
         assert rec["sql_correctness_passed"] is True
-        assert len(rec["cortex_traces"]) == 1
+        assert len(rec["od_fdl_results"]) == 1
 
     def test_conversational_flow_has_no_interpretation_or_sql(self):
         """Per-trace + interpretation are None for a conversational flow."""
@@ -603,8 +601,8 @@ class TestBuildQuestionRecord:
         run = _local_run_json()
         q = run["results"][0]
         q["eval"]["per_trace"] = [
-            {"sql_score": 0.9, "sql_passed": True, "sql_reason": "ok"},
-            {"sql_score": 0.6, "sql_passed": False, "sql_reason": "bad"},
+            {"source": "fdl", "sql_score": 0.9, "sql_passed": True, "sql_reason": "ok"},
+            {"source": "athena", "sql_score": 0.6, "sql_passed": False, "sql_reason": "bad"},
         ]
         rec = _build_question_record("run_20260624_120000", q)
         assert rec["sql_correctness_score"] == pytest.approx(0.75)

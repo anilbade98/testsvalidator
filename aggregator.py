@@ -13,7 +13,8 @@ def _safe_mean(values: list[float]) -> float | None:
 
 
 def aggregate(run: dict) -> dict:
-    results = run.get("results") or []
+    # Only aggregate single-turn question records; chain records (chain_id/turns) are excluded.
+    results = [r for r in (run.get("results") or []) if "question_id" in r]
     total = len(results)
     if total == 0:
         return {"total": 0}
@@ -67,10 +68,10 @@ def aggregate(run: dict) -> dict:
             else:
                 resp_failed += 1
 
-        for pt in ev.get("per_trace") or []:
-            if pt.get("sql_score") is not None:
-                sql_scores.append(pt["sql_score"])
-                if pt.get("sql_passed"):
+        for pr in ev.get("per_trace") or []:
+            if pr.get("sql_score") is not None:
+                sql_scores.append(pr["sql_score"])
+                if pr.get("sql_passed"):
                     sql_passed += 1
 
     by_flow_summary = {

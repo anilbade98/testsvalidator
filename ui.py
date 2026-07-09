@@ -9,14 +9,22 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
 
+# Ensure project root is on sys.path so tests.validator.* imports work inside
+# the Streamlit process (e.g. the History tab's "Persist to DB" button).
+_ROOT = str(Path(__file__).resolve().parents[2])
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
 import requests
 import streamlit as st
+import streamlit.components.v1 as _stc
 
 HARNESS_DIR = Path(__file__).resolve().parent
 RESULTS_DIR = HARNESS_DIR / "results"
@@ -27,7 +35,7 @@ PASS_THRESHOLD = 0.7
 VALID_FLOWS = ["fdl", "od", "ao", "rca", "advisory", "mixed", "context", "refresh", "conversational"]
 
 
-# -- Page config ---------------------------------------------------------------
+# - Page config --------------------------------
 
 st.set_page_config(
     page_title="Validator",
@@ -39,7 +47,7 @@ st.set_page_config(
 st.title("Analytics Agent Validator")
 
 
-# -- Load catalogs -------------------------------------------------------------
+# - Load catalogs -------------------------------
 
 _questions = json.loads(QUESTIONS_PATH.read_text(encoding="utf-8")) if QUESTIONS_PATH.exists() else []
 _chains = json.loads(CHAINS_PATH.read_text(encoding="utf-8")) if CHAINS_PATH.exists() else []
@@ -49,7 +57,7 @@ _all_items = (
 )
 
 
-# -- Helpers -------------------------------------------------------------------
+# - Helpers ----------------------------------
 
 def _ck(kind: str, item_id: int) -> str:
     return f"{kind}_{item_id}"
@@ -64,17 +72,26 @@ def _get_selected() -> dict:
 
 def _apply_preset(preset: str) -> None:
     if preset == "smoke":
-        by_flow: dict = {}
+        # 1 question per flow (prefer priority=true), 1 chain per flow (prefer priority=true)
+        by_flow_q: dict = {}
         for q in _questions:
-            by_flow.setdefault(q.get("flow", "other"), []).append(q)
+            by_flow_q.setdefault(q.get("flow", "other"), []).append(q)
         selected_qids = set()
-        for qs in by_flow.values():
+        for qs in by_flow_q.values():
             p = [q for q in qs if q.get("priority")]
             selected_qids.add((p[0] if p else qs[0])["id"])
         for q in _questions:
             st.session_state[_ck("q", q["id"])] = q["id"] in selected_qids
+
+        by_flow_c: dict = {}
         for c in _chains:
-            st.session_state[_ck("c", c["chain_id"])] = False
+            by_flow_c.setdefault(c.get("flow", "other"), []).append(c)
+        selected_cids = set()
+        for cs in by_flow_c.values():
+            p = [c for c in cs if c.get("priority")]
+            selected_cids.add((p[0] if p else cs[0])["chain_id"])
+        for c in _chains:
+            st.session_state[_ck("c", c["chain_id"])] = c["chain_id"] in selected_cids
 
     elif preset == "priority":
         for q in _questions:
@@ -85,6 +102,8 @@ def _apply_preset(preset: str) -> None:
     elif preset == "all_q":
         for q in _questions:
             st.session_state[_ck("q", q["id"])] = True
+        for c in _chains:
+            st.session_state[_ck("c", c["chain_id"])] = True
 
     elif preset == "none":
         for q in _questions:
@@ -93,40 +112,77 @@ def _apply_preset(preset: str) -> None:
             st.session_state[_ck("c", c["chain_id"])] = False
 
 
-def _build_args(out_path: Path, selected: dict) -> list[str]:
+def _base_args(out_path: Path) -> list[str]:
+    args = [PYTHON, "-u", "-m", "tests.validator.run",
+            "--output", str(out_path),
+            "--base-url", st.session_state.get("base_url", "http://localhost:80")]
+    _env = st.session_state.get("env_name", "staging")
+    _tunnel = st.session_state.get("service_mode", "local") == "local"
+    if _tunnel:
+        args += ["--env", _env, "--tunnel"]
+    elif _env:
+        args += ["--env", _env]
+    if st.session_state.get("skip_eval"):
+        args.append("--skip-eval")
+    if st.session_state.get("use_persist") and not st.session_state.get("skip_eval"):
+        args.append("--persist")
+    _workers = int(st.session_state.get("workers", 1))
+    if _workers > 1:
+        args += ["--workers", str(_workers)]
+    _ref_date = (st.session_state.get("reference_date") or "").strip()
+    if _ref_date:
+        args += ["--reference-date", _ref_date]
+    return args
+
+
+def _build_run_plan(ts: str, selected: dict) -> list[dict]:
+    """Return a single-step plan: one subprocess handles both questions and chains."""
     q_ids = selected.get("q") or []
     c_ids = selected.get("c") or []
-    base = [PYTHON, "-u", "-m", "tests.validator.run", "--output", str(out_path),
-            "--base-url", st.session_state.get("base_url", "http://localhost:80")]
-
-    _env = st.session_state.get("env_name", "staging")
-    if st.session_state.get("use_tunnel"):
-        base += ["--env", _env, "--tunnel"]
-    elif _env:
-        base += ["--env", _env]
-
-    if st.session_state.get("skip_eval"):
-        base.append("--skip-eval")
-
-    if c_ids and not q_ids:
-        base += ["--chains", "--chain-ids", ",".join(str(i) for i in sorted(c_ids))]
-    elif q_ids:
-        base += ["--ids", ",".join(str(i) for i in sorted(q_ids))]
-
-    return base
+    if not q_ids and not c_ids:
+        return []
+    out = RESULTS_DIR / f"run_{ts}.json"
+    args = _base_args(out)
+    if q_ids:
+        args += ["--ids", ",".join(str(i) for i in sorted(q_ids))]
+    if c_ids:
+        args += ["--chain-ids", ",".join(str(i) for i in sorted(c_ids))]
+    return [{"label": "Run", "args": args, "out_path": out}]
 
 
 def _run_env() -> dict:
     env_vars = os.environ.copy()
     env_vars["PYTHONIOENCODING"] = "utf-8"
     env_vars["PYTHONUTF8"] = "1"
-    env_vars["PYTHONUNBUFFERED"] = "1"  # flush every print() immediately to the pipe
-    token = st.session_state.get("_resolved_token", "")
-    tenant = st.session_state.get("_resolved_tenant", "")
-    if token:
-        env_vars["EVAL_BEARER_TOKEN"] = token
-    if tenant:
-        env_vars["EVAL_TENANT_ID"] = tenant
+    env_vars["PYTHONUNBUFFERED"] = "1"
+
+    # When logged in via email+password, pass credentials so the runner can
+    # re-authenticate automatically when the token expires during a long run.
+    # EVAL_BEARER_TOKEN disables auto-refresh (treated as a static override),
+    # so we only set it when there are no re-auth credentials available.
+    email = st.session_state.get("_login_email", "")
+    password = st.session_state.get("_login_password", "")
+    login_env = st.session_state.get("_login_env", "")
+
+    if email and password and login_env:
+        # Pass credentials so the runner can call the auth API again on 401
+        env_vars["EVAL_AUTH_EMAIL"] = email
+        env_vars["EVAL_AUTH_PASSWORD"] = password
+        env_vars["EVAL_AUTH_ENV"] = login_env
+        env_vars["EVAL_TENANT_ID"] = st.session_state.get("_resolved_tenant", "")
+        # Also set the initial token so the first requests don't need to re-login
+        initial_token = st.session_state.get("_resolved_token", "")
+        if initial_token:
+            env_vars["EVAL_BEARER_TOKEN"] = initial_token
+    else:
+        # Bearer-token-only mode: pass the token (auto-refresh won't work if it expires)
+        token = st.session_state.get("_resolved_token", "")
+        tenant = st.session_state.get("_resolved_tenant", "")
+        if token:
+            env_vars["EVAL_BEARER_TOKEN"] = token
+        if tenant:
+            env_vars["EVAL_TENANT_ID"] = tenant
+
     return env_vars
 
 
@@ -159,12 +215,26 @@ def _push_status(run_path: Path) -> tuple[str, str]:
     if pass_rate is None:
         return "warning", "No scores yet. Re-run without --skip-eval to assess quality."
     mean_str = f"  (mean {mean:.2f})" if mean is not None else ""
+
+    # All scored metrics must be above threshold for an overall PASS.
+    failing = []
+    for key, label in [
+        ("agent_response", "agent response"),
+        ("interpretation_coverage", "interpretation"),
+        ("sql_correctness", "SQL correctness"),
+    ]:
+        m = agg.get(key) or {}
+        if m.get("n", 0) > 0 and (m.get("pass_rate") or 0) < PASS_THRESHOLD:
+            failing.append(f"{label} {(m['pass_rate'] or 0)*100:.0f}%")
+
+    if failing:
+        return "error", f"Quality issues — {', '.join(failing)} below {PASS_THRESHOLD*100:.0f}% threshold."
     if pass_rate >= 0.8:
-        return "success", f"Quality looks good - {pass_rate*100:.0f}% passed{mean_str}"
+        return "success", f"Quality looks good — {pass_rate*100:.0f}% passed{mean_str}"
     elif pass_rate >= 0.6:
-        return "warning", f"Some quality issues - {pass_rate*100:.0f}% passed{mean_str}. Review failing questions."
+        return "warning", f"Some quality issues — {pass_rate*100:.0f}% passed{mean_str}. Review failing questions."
     else:
-        return "error", f"Low quality detected - only {pass_rate*100:.0f}% passed{mean_str}."
+        return "error", f"Low quality — only {pass_rate*100:.0f}% passed{mean_str}."
 
 
 def _start_proc(args: list[str]) -> subprocess.Popen:
@@ -187,14 +257,46 @@ def _reader_thread(proc: subprocess.Popen, out_queue: queue.Queue) -> None:
     out_queue.put(None)  # sentinel: process finished
 
 
-# -- Session state init --------------------------------------------------------
+_HTML_INLINE_LIMIT = 400_000  # bytes — components.html WebSocket payload cap
+
+
+def _html_report_section(html_path: Path, height: int = 900, key_suffix: str = "") -> None:
+    """Render an HTML report file inline, with a download button always shown.
+
+    Uses streamlit.components.v1.html() for inline preview.  Reports larger than
+    _HTML_INLINE_LIMIT bytes are not embedded — they are too big for a single
+    WebSocket payload and cause 'websocket.send after websocket.close' errors.
+    Use the download button to open them in a browser instead.
+    """
+    html_content = html_path.read_text(encoding="utf-8")
+    size_kb = len(html_content) // 1024
+    st.download_button(
+        f"⬇ Download HTML report ({size_kb} KB)",
+        html_content,
+        file_name=html_path.name,
+        mime="text/html",
+        key=f"dl_{html_path.name}_{key_suffix}",
+    )
+    if len(html_content) <= _HTML_INLINE_LIMIT:
+        _stc.html(html_content, height=height, scrolling=True)
+    else:
+        st.info(
+            f"Report is {size_kb} KB — too large to preview inline. "
+            "Use the download button above to open it in your browser."
+        )
+
+
+# - Session state init ----------------------------
 
 for _k, _v in [
     ("proc", None), ("run_output", []), ("last_run_path", None),
-    ("out_queue", None), ("reader_done", False),
-    ("base_url", "http://localhost:80"), ("env_name", "staging"),
-    ("use_tunnel", False), ("skip_eval", False),
+    ("out_queue", None), ("reader_done", False), ("pending_args", []),
+    ("prog_phase", ""), ("prog_n", 0), ("prog_total", 0),
+    ("service_mode", "local"), ("env_name", "staging"),
+    ("base_url", "http://localhost:80"),
+    ("skip_eval", False), ("use_persist", False), ("workers", 1), ("reference_date", ""),
     ("_resolved_token", ""), ("_resolved_tenant", ""),
+    ("_login_email", ""), ("_login_password", ""), ("_login_env", ""),
 ]:
     if _k not in st.session_state:
         st.session_state[_k] = _v
@@ -204,11 +306,20 @@ if "picker_initialized" not in st.session_state:
     _apply_preset("smoke")
 
 
-# -- Sidebar -------------------------------------------------------------------
+# - Sidebar ----------------------------------
 
 with st.sidebar:
-    # ---- Auth ----------------------------------------------------------------
+    # -- Auth + Environment (together) ----------------
     st.header("Authentication")
+
+    env_names = ["staging", "dev", "production"]
+    st.session_state.env_name = st.selectbox(
+        "Environment",
+        env_names,
+        index=env_names.index(st.session_state.env_name) if st.session_state.env_name in env_names else 0,
+        help="Used for auth, tunnel targets, and DynamoDB table names.",
+    )
+
     auth_mode = st.radio("Method", ["Bearer token", "Email + Password"], horizontal=True)
 
     if auth_mode == "Bearer token":
@@ -217,17 +328,22 @@ with st.sidebar:
         if st.button("Apply token"):
             st.session_state._resolved_token = bearer.strip()
             st.session_state._resolved_tenant = tenant_override.strip()
+            st.session_state._login_email = ""
+            st.session_state._login_password = ""
             st.success("Token applied.")
     else:
         email = st.text_input("Email")
         password = st.text_input("Password", type="password")
-        login_env = st.selectbox("Environment", ["staging", "dev", "production"], key="login_env")
         if st.button("Log in", type="primary"):
+            login_env = st.session_state.env_name
             with st.spinner("Authenticating..."):
                 try:
                     result = _auth_login(email, password, login_env)
                     st.session_state._resolved_token = result["token"]
                     st.session_state._resolved_tenant = result.get("tenant_id", "")
+                    st.session_state._login_email = email
+                    st.session_state._login_password = password
+                    st.session_state._login_env = login_env
                     st.success(f"Logged in. tenant={result.get('tenant_id','')[:8]}...")
                 except Exception as exc:
                     st.error(f"Login failed: {exc}")
@@ -237,18 +353,59 @@ with st.sidebar:
 
     st.divider()
 
-    # ---- Service -------------------------------------------------------------
+    # -- Service location ------------------------------
     st.header("Service")
-    st.session_state.base_url = st.text_input("Base URL", value=st.session_state.base_url)
-    st.session_state.env_name = st.selectbox("Environment", ["staging", "dev", "production"],
-                                             index=["staging", "dev", "production"].index(st.session_state.env_name))
-    st.session_state.use_tunnel = st.checkbox("Tunnel (SSM)", value=st.session_state.use_tunnel)
-    st.session_state.skip_eval = st.checkbox("Skip eval", value=st.session_state.skip_eval,
+
+    st.session_state.service_mode = st.radio(
+        "Location",
+        ["local", "deployed"],
+        format_func=lambda m: "Local (python main.py)" if m == "local" else "Deployed (via ALB tunnel)",
+        horizontal=True,
+    )
+
+    if st.session_state.service_mode == "local":
+        st.session_state.base_url = st.text_input(
+            "URL", value=st.session_state.base_url,
+            help="URL of the locally running service.",
+        )
+        use_tunnel = True
+        st.caption("SSM tunnels: auto-enabled for FDL/OD/AO/RCA")
+    else:
+        _default_deployed = "http://localhost:8080"
+        if "localhost" not in st.session_state.base_url or st.session_state.base_url == "http://localhost:80":
+            st.session_state.base_url = _default_deployed
+        st.session_state.base_url = st.text_input(
+            "URL", value=st.session_state.base_url,
+            help="localhost:8080 when ALB tunnel is open. Change port if needed.",
+        )
+        use_tunnel = False
+        st.caption(f"Open ALB tunnel first: `/tunnel {st.session_state.env_name}` in a terminal")
+
+    st.divider()
+    st.header("Run options")
+    st.session_state.skip_eval = st.checkbox("Skip eval",
+                                             value=st.session_state.skip_eval,
                                              help="Collect traces only, no LLM scoring.")
+    st.session_state.use_persist = st.checkbox(
+        "Persist to DB", value=st.session_state.use_persist,
+        help="Write results to DynamoDB after scoring.",
+        disabled=st.session_state.skip_eval,
+    )
+    st.session_state.workers = st.slider(
+        "Workers", min_value=1, max_value=10,
+        value=st.session_state.workers,
+        help="Parallel workers for both collection and scoring. 1 = sequential. 3-5 is a good balance.",
+    )
+    st.session_state.reference_date = st.text_input(
+        "Reference date",
+        value=st.session_state.reference_date,
+        placeholder="YYYY-MM-DD  (leave empty for today)",
+        help="Pin 'today' to a fixed date so the agent generates date filters that match the static test dataset.",
+    )
 
     st.divider()
 
-    # ---- Test selection ------------------------------------------------------
+    # -- Test selection ---------------------------
     st.header("Test selection")
 
     sel = _get_selected()
@@ -257,12 +414,14 @@ with st.sidebar:
     n_total_sel = n_q + n_c
     st.caption(f"Selected: {n_total_sel} ({n_q} questions, {n_c} chains)")
 
-    p_cols = st.columns(3)
+    p_cols = st.columns(4)
     if p_cols[0].button("Smoke", use_container_width=True):
         _apply_preset("smoke"); st.rerun()
     if p_cols[1].button("Priority", use_container_width=True):
         _apply_preset("priority"); st.rerun()
-    if p_cols[2].button("Clear all", use_container_width=True):
+    if p_cols[2].button("All", use_container_width=True):
+        _apply_preset("all_q"); st.rerun()
+    if p_cols[3].button("Clear", use_container_width=True):
         _apply_preset("none"); st.rerun()
 
     # Questions grouped by flow
@@ -270,12 +429,9 @@ with st.sidebar:
     for q in _questions:
         by_flow.setdefault(q.get("flow", "other"), []).append(q)
 
-    with st.expander(f"Questions ({n_q}/{len(_questions)} selected)", expanded=True):
-        sel_all_q = st.checkbox("All questions", value=n_q == len(_questions), key="sel_all_q")
-        if sel_all_q != (n_q == len(_questions)):
-            for q in _questions:
-                st.session_state[_ck("q", q["id"])] = sel_all_q
-            st.rerun()
+    n_sel_c = sum(1 for c in _chains if st.session_state.get(_ck("c", c["chain_id"]), False))
+    header = f"Tests ({n_q}/{len(_questions)} questions, {n_sel_c}/{len(_chains)} chains selected)"
+    with st.expander(header, expanded=True):
         for flow_name in sorted(by_flow.keys()):
             qs_in_flow = by_flow[flow_name]
             n_sel_flow = sum(1 for q in qs_in_flow if st.session_state.get(_ck("q", q["id"]), False))
@@ -286,39 +442,42 @@ with st.sidebar:
                 label = f"#{q['id']} {q.get('question','')[:45]}...  `{q.get('complexity','')}`{priority_tag}"
                 st.checkbox(label, key=key)
 
-    # Chains
-    if _chains:
-        n_sel_c = sum(1 for c in _chains if st.session_state.get(_ck("c", c["chain_id"]), False))
-        with st.expander(f"Chains ({n_sel_c}/{len(_chains)} selected)", expanded=False):
+        if _chains:
+            st.markdown(f"**chains** ({n_sel_c}/{len(_chains)})")
             for c in _chains:
                 key = _ck("c", c["chain_id"])
                 turns = len(c.get("turns") or [])
-                label = f"#{c['chain_id']} {c.get('name','')}  `{c.get('flow','')}` ({turns} turns)"
+                priority_tag = " [P]" if c.get("priority") else ""
+                label = f"#{c['chain_id']} {c.get('name','')}  `{c.get('flow','')}` ({turns} turns){priority_tag}"
                 st.checkbox(label, key=key)
 
 
-# -- Re-compute selected after sidebar interactions ---------------------------
+# - Re-compute selected after sidebar interactions --------------
 
 _selected = _get_selected()
 _n_selected = len(_selected["q"]) + len(_selected["c"])
 
 
-# -- Tabs ----------------------------------------------------------------------
+# - Tabs -----------------------------------
 
-tab_run, tab_results, tab_history, tab_catalog = st.tabs(["Run", "Results", "History", "Catalog"])
+tab_run, tab_history, tab_catalog = st.tabs(["Run", "History", "Catalog"])
 
 
-# -- Tab: Run ------------------------------------------------------------------
+# - Tab: Run ---------------------------------
 
 with tab_run:
     # Controls
     if not st.session_state._resolved_token:
         st.warning("No token - log in or paste a bearer token in the sidebar.")
 
-    preview_path = RESULTS_DIR / "preview.json"
-    cmd_args = _build_args(preview_path, _selected)
+    preview_plan = _build_run_plan("preview", _selected)
     with st.expander("CLI command"):
-        st.code(" ".join(cmd_args), language="bash")
+        if preview_plan:
+            for step in preview_plan:
+                st.caption(step["label"])
+                st.code(" ".join(step["args"]), language="bash")
+        else:
+            st.caption("No tests selected.")
 
     ctrl_cols = st.columns([3, 1, 1])
     with ctrl_cols[0]:
@@ -334,33 +493,72 @@ with tab_run:
             st.session_state.last_run_path = None
             st.session_state.run_output = []
             st.session_state.reader_done = False
+            st.session_state.pending_args = []
+            st.session_state.prog_phase = ""
+            st.session_state.prog_n = 0
+            st.session_state.prog_total = 0
             st.rerun()
 
-    # Start process
+    # Start process (first step; remaining steps stored in pending_args)
     if start:
         RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-        ts = time.strftime("%Y%m%d_%H%M%S")
-        prefix = "chains" if (_selected["c"] and not _selected["q"]) else "run"
-        out_path = RESULTS_DIR / f"{prefix}_{ts}.json"
-        args = _build_args(out_path, _selected)
-        st.session_state.last_run_path = out_path
-        st.session_state.run_output = [f"$ {' '.join(args)}", ""]
-        st.session_state.reader_done = False
-        proc = _start_proc(args)
-        st.session_state.proc = proc
-        q: queue.Queue = queue.Queue()
-        st.session_state.out_queue = q
-        threading.Thread(target=_reader_thread, args=(proc, q), daemon=True).start()
-        st.rerun()
+        ts = time.strftime("%Y%m%d_%H%M%S", time.gmtime())
+        plan = _build_run_plan(ts, _selected)
+        if not plan:
+            st.warning("Nothing to run.")
+        else:
+            first = plan[0]
+            st.session_state.pending_args = plan[1:]
+            st.session_state.last_run_path = first["out_path"]
+            st.session_state.run_output = [
+                f"$ {' '.join(first['args'])}",
+                "",
+            ]
+            st.session_state.reader_done = False
+            st.session_state.prog_phase = ""
+            st.session_state.prog_n = 0
+            st.session_state.prog_total = 0
+            proc = _start_proc(first["args"])
+            st.session_state.proc = proc
+            q: queue.Queue = queue.Queue()
+            st.session_state.out_queue = q
+            threading.Thread(target=_reader_thread, args=(proc, q), daemon=True).start()
+            st.rerun()
 
-    # Stop process
+    # Stop process (also clears pending steps)
     if stop and st.session_state.proc:
         st.session_state.proc.terminate()
         st.session_state.proc = None
-        st.session_state.run_output.append("--- stopped ---")
+        st.session_state.pending_args = []
+        st.session_state.run_output.append("-- stopped --")
         st.rerun()
 
+    _COLLECT_RE = re.compile(r"^\[(\d+)/(\d+)\]")
+    _EVAL_RE = re.compile(r"^\[eval (\d+)/(\d+)\]")
+
+    prog_bar = st.empty()
     output_area = st.empty()
+
+    def _parse_progress(line: str) -> None:
+        m = _EVAL_RE.match(line)
+        if m:
+            st.session_state.prog_phase = "Scoring"
+            st.session_state.prog_n = int(m.group(1))
+            st.session_state.prog_total = int(m.group(2))
+            return
+        m = _COLLECT_RE.match(line)
+        if m:
+            st.session_state.prog_phase = "Collecting"
+            st.session_state.prog_n = int(m.group(1))
+            st.session_state.prog_total = int(m.group(2))
+
+    def _refresh_prog() -> None:
+        n, total, phase = st.session_state.prog_n, st.session_state.prog_total, st.session_state.prog_phase
+        if total > 0:
+            pct = min(n / total, 1.0)
+            prog_bar.progress(pct, text=f"{phase}: {n} / {total}")
+        else:
+            prog_bar.empty()
 
     # Blocking streaming loop: sends real-time WebSocket updates to the browser
     # without Streamlit's "running" spinner overlay (no st.rerun() during streaming).
@@ -372,22 +570,49 @@ with tab_run:
                 try:
                     line = q_ref.get_nowait()
                     if line is None:
-                        # Sentinel: process has exited
+                        # Sentinel: process has exited — start next step if any
                         st.session_state.proc = None
-                        st.session_state.reader_done = True
+                        pending = st.session_state.get("pending_args", [])
+                        if pending:
+                            nxt = pending[0]
+                            st.session_state.pending_args = pending[1:]
+                            st.session_state.last_run_path = nxt["out_path"]
+                            st.session_state.run_output += [
+                                "",
+                                f"=== {nxt['label']} ===",
+                                f"$ {' '.join(nxt['args'])}",
+                                "",
+                            ]
+                            next_proc = _start_proc(nxt["args"])
+                            st.session_state.proc = next_proc
+                            nxt_q: queue.Queue = queue.Queue()
+                            st.session_state.out_queue = nxt_q
+                            threading.Thread(
+                                target=_reader_thread, args=(next_proc, nxt_q), daemon=True,
+                            ).start()
+                            q_ref = nxt_q
+                        else:
+                            st.session_state.reader_done = True
                         break
+                    _parse_progress(line)
                     st.session_state.run_output.append(line)
                 except queue.Empty:
                     break
 
-            # Push current output to browser immediately (incremental update)
+            # Push current output and progress to browser
+            _refresh_prog()
             output_area.code(
                 "\n".join(st.session_state.run_output),
                 language="text",
             )
 
-            if st.session_state.proc is None:
-                break  # process finished, exit loop
+            if st.session_state.proc is None and st.session_state.reader_done:
+                break  # all steps finished, exit loop
+
+            if st.session_state.proc is None and st.session_state.pending_args:
+                # Next process was just queued but not yet started (race guard)
+                time.sleep(0.05)
+                continue
 
             time.sleep(0.2)
 
@@ -413,29 +638,66 @@ with tab_run:
         html_path = run_path.with_suffix(".html") if run_path.exists() else None
         if html_path and html_path.exists():
             st.subheader("Report")
-            st.iframe(html_path.read_text(encoding="utf-8"), height=950)
+            _html_report_section(html_path, height=950, key_suffix="run")
         else:
-            st.info("No HTML report yet (run without --skip-eval to generate one).")
+            st.info("No HTML report yet (run without -skip-eval to generate one).")
 
     elif st.session_state.run_output:
         # Not yet started streaming (between start click and first loop iteration)
         output_area.code("\n".join(st.session_state.run_output), language="text")
 
 
-# -- Tab: Results --------------------------------------------------------------
+# - Tab: History (combined overview + details) ----------------
 
-with tab_results:
-    all_result_files = sorted(
+with tab_history:
+    all_files = sorted(
         list(RESULTS_DIR.glob("run_*.json")) + list(RESULTS_DIR.glob("chains_*.json")),
         key=lambda p: p.name, reverse=True,
     )
 
-    if not all_result_files:
-        st.info("No results yet. Run an evaluation first.")
+    if not all_files:
+        st.info("No runs found. Start an evaluation from the Run tab.")
     else:
+        # ?? Summary table ??????????????????????????????????????????????????????
+        history_rows = []
+        for f in all_files[:50]:
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+                agg = data.get("aggregated_scores") or {}
+                ar = agg.get("agent_response") or {}
+                history_rows.append({
+                    "File": f.name,
+                    "Timestamp": data.get("run_timestamp", "")[:16].replace("T", " "),
+                    "n": str(agg.get("total", "-")),
+                    "Agent mean": f"{ar['mean']:.3f}" if ar.get("mean") is not None else "-",
+                    "Pass rate": f"{ar['pass_rate']*100:.0f}%" if ar.get("pass_rate") is not None else "-",
+                    "Errors": str(agg.get("errors", 0)),
+                    "Status": "PASS" if (ar.get("pass_rate") or 0) >= 0.7 else ("FAIL" if ar.get("pass_rate") is not None else "-"),
+                })
+            except Exception:
+                pass
+
+        if history_rows:
+            st.dataframe(history_rows, width="stretch", height=220)
+
+        # Trend chart
+        trend_data = [(r["Timestamp"], float(r["Agent mean"])) for r in history_rows if r["Agent mean"] not in ("-", "")]
+        if len(trend_data) >= 2:
+            import pandas as pd
+            df = pd.DataFrame(trend_data[::-1], columns=["Run", "Score"])
+            df = df.set_index("Run")
+            st.line_chart(df)
+            st.caption(f"Pass threshold: {PASS_THRESHOLD}")
+
+        st.divider()
+
+        # ?? Run details (combined Results) ?????????????????????????????????????
         selected_file = st.selectbox(
-            "Select result file", all_result_files,
-            format_func=lambda p: p.name, index=0,
+            "Select run to inspect",
+            all_files,
+            format_func=lambda p: p.name,
+            index=0,
+            key="history_selected",
         )
 
         if selected_file and selected_file.exists():
@@ -443,9 +705,9 @@ with tab_results:
             agg = run.get("aggregated_scores") or {}
             ar = agg.get("agent_response") or {}
 
-            # Status + re-run eval button
-            r_cols = st.columns([4, 1])
-            with r_cols[0]:
+            # Status banner + action buttons
+            banner_col, btn1, btn2 = st.columns([4, 1, 1])
+            with banner_col:
                 status_type, status_msg = _push_status(selected_file)
                 if status_type == "success":
                     st.success(status_msg)
@@ -453,25 +715,35 @@ with tab_results:
                     st.warning(status_msg)
                 else:
                     st.error(status_msg)
-            with r_cols[1]:
-                if st.button("Re-run eval", width="stretch",
-                             disabled=bool(st.session_state.proc),
-                             help="Score this run file with the LLM judge."):
-                    args = [PYTHON, "-m", "tests.validator.run",
-                            "--eval-only", str(selected_file)]
-                    st.session_state.last_run_path = selected_file
-                    st.session_state.run_output = [f"$ {' '.join(args)}", ""]
-                    st.session_state.reader_done = False
-                    proc = _start_proc(args)
-                    st.session_state.proc = proc
-                    q: queue.Queue = queue.Queue()
-                    st.session_state.out_queue = q
-                    threading.Thread(target=_reader_thread, args=(proc, q), daemon=True).start()
-                    st.rerun()
+
+            if btn1.button("Re-run eval", width="stretch",
+                           disabled=bool(st.session_state.proc),
+                           help="Re-score with the LLM judge (skips already-scored records)."):
+                args = [PYTHON, "-u", "-m", "tests.validator.run",
+                        "--eval-only", str(selected_file), "--skip-scored"]
+                st.session_state.last_run_path = selected_file
+                st.session_state.run_output = [f"$ {' '.join(args)}", ""]
+                st.session_state.reader_done = False
+                proc = _start_proc(args)
+                st.session_state.proc = proc
+                q_ref: queue.Queue = queue.Queue()
+                st.session_state.out_queue = q_ref
+                threading.Thread(target=_reader_thread, args=(proc, q_ref), daemon=True).start()
+                st.rerun()
+
+            if btn2.button("Persist to DB", width="stretch",
+                           disabled=bool(st.session_state.proc),
+                           help="Write scored results to DynamoDB (requires scores to exist)."):
+                try:
+                    from tests.validator.persistence import persist_run_file
+                    persist_run_file(selected_file)
+                    st.success(f"Persisted {selected_file.name} to DynamoDB.")
+                except Exception as exc:
+                    st.error(f"Persist failed: {exc}")
 
             st.divider()
 
-            # Metrics
+            # Key metrics
             meta_cols = st.columns(4)
             meta_cols[0].metric("Questions", agg.get("total", len(run.get("results", []))))
             meta_cols[1].metric("Errors", agg.get("errors", 0))
@@ -493,13 +765,11 @@ with tab_results:
                     col.metric(label, f"{m['mean']:.3f}",
                                f"{m['pass_rate']*100:.0f}% pass" if m.get("pass_rate") is not None else None)
 
-            st.divider()
-
             # By flow
             by_flow_agg = agg.get("by_flow") or {}
             if by_flow_agg:
-                st.subheader("By flow")
-                rows = [
+                st.divider()
+                flow_rows = [
                     {
                         "Flow": flow,
                         "n": str(d.get("total", 0)),
@@ -508,99 +778,36 @@ with tab_results:
                     }
                     for flow, d in sorted(by_flow_agg.items())
                 ]
-                st.dataframe(rows, width="stretch")
-
-            st.divider()
+                st.dataframe(flow_rows, width="stretch")
 
             # Per-question table
-            st.subheader("Questions")
             results = run.get("results") or []
-            table_rows = []
-            for r in results:
-                ev = r.get("eval") or {}
-                ar_r = ev.get("agent_response") or {}
-                table_rows.append({
-                    "ID": str(r.get("question_id", "")),
-                    "Flow": r.get("flow", ""),
-                    "Question": (r.get("question") or "")[:70],
-                    "Score": f"{ar_r['score']:.3f}" if ar_r.get("score") is not None else "-",
-                    "Pass": "yes" if ar_r.get("passed") else ("no" if ar_r.get("passed") is False else "-"),
-                    "SQL calls": str(len(r.get("cortex_traces") or [])),
-                    "Error": "!" if r.get("error") else "",
-                })
-            if table_rows:
-                st.dataframe(table_rows, width="stretch", height=400)
+            if results:
+                st.divider()
+                table_rows = []
+                for r in results:
+                    ev = r.get("eval") or {}
+                    ar_r = ev.get("agent_response") or {}
+                    table_rows.append({
+                        "ID": str(r.get("question_id", "")),
+                        "Flow": r.get("flow", ""),
+                        "Question": (r.get("question") or "")[:70],
+                        "Score": f"{ar_r['score']:.3f}" if ar_r.get("score") is not None else "-",
+                        "Pass": "yes" if ar_r.get("passed") else ("no" if ar_r.get("passed") is False else "-"),
+                        "SQL results": str(len(r.get("od_fdl_results") or [])),
+                        "Error": "!" if r.get("error") else "",
+                    })
+                st.dataframe(table_rows, width="stretch", height=350)
 
             # HTML report
             html_path = selected_file.with_suffix(".html")
             if html_path.exists():
                 st.divider()
-                with st.expander("Full HTML report", expanded=False):
-                    st.iframe(html_path.read_text(encoding="utf-8"), height=800)
+                with st.expander("Full HTML report", expanded=True):
+                    _html_report_section(html_path, height=900, key_suffix="history")
 
 
-# -- Tab: History --------------------------------------------------------------
-
-with tab_history:
-    st.subheader("Run history")
-    all_files = sorted(
-        list(RESULTS_DIR.glob("run_*.json")) + list(RESULTS_DIR.glob("chains_*.json")),
-        key=lambda p: p.name, reverse=True,
-    )
-
-    if not all_files:
-        st.info("No previous runs found.")
-    else:
-        history_rows = []
-        for f in all_files[:30]:
-            try:
-                data = json.loads(f.read_text(encoding="utf-8"))
-                agg = data.get("aggregated_scores") or {}
-                ar = agg.get("agent_response") or {}
-                history_rows.append({
-                    "File": f.name,
-                    "Timestamp": data.get("run_timestamp", "")[:16].replace("T", " "),
-                    "n": str(agg.get("total", "-")),
-                    "Agent mean": f"{ar['mean']:.3f}" if ar.get("mean") is not None else "-",
-                    "Pass rate": f"{ar['pass_rate']*100:.0f}%" if ar.get("pass_rate") is not None else "-",
-                    "Errors": str(agg.get("errors", 0)),
-                    "Status": "PASS" if (ar.get("pass_rate") or 0) >= 0.7 else ("FAIL" if ar.get("pass_rate") is not None else "-"),
-                })
-            except Exception:
-                pass
-
-        if history_rows:
-            st.dataframe(history_rows, width="stretch", height=300)
-
-        # Trend chart
-        trend_data = [(r["Timestamp"], float(r["Agent mean"])) for r in history_rows if r["Agent mean"] not in ("-", "")]
-        if len(trend_data) >= 2:
-            st.divider()
-            st.subheader("Score trend")
-            import pandas as pd
-            df = pd.DataFrame(trend_data[::-1], columns=["Run", "Score"])
-            df = df.set_index("Run")
-            st.line_chart(df)
-            st.caption(f"Pass threshold: {PASS_THRESHOLD}")
-
-        # Report viewer
-        st.divider()
-        st.subheader("View report")
-        selected_hist = st.selectbox(
-            "Select run to view",
-            all_files,
-            format_func=lambda p: p.name,
-            key="history_selected",
-        )
-        if selected_hist:
-            html_hist = selected_hist.with_suffix(".html")
-            if html_hist.exists():
-                st.iframe(html_hist.read_text(encoding="utf-8"), height=900)
-            else:
-                st.info("No HTML report for this run (was run with --skip-eval).")
-
-
-# -- Tab: Catalog --------------------------------------------------------------
+# - Tab: Catalog -------------------------------
 
 def _save_questions(questions: list[dict]) -> None:
     QUESTIONS_PATH.write_text(json.dumps(questions, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -615,7 +822,7 @@ def _next_id(items: list[dict], id_key: str) -> int:
 with tab_catalog:
     cat_q_tab, cat_c_tab = st.tabs(["Questions", "Chains"])
 
-    # -- Questions --------------------------------------------------------------
+    # - Questions -------------------------------
     with cat_q_tab:
         questions_live = json.loads(QUESTIONS_PATH.read_text(encoding="utf-8")) if QUESTIONS_PATH.exists() else []
 
@@ -659,10 +866,10 @@ with tab_catalog:
 
         # Edit / Add form
         all_ids = [q["id"] for q in questions_live]
-        edit_options = ["-- Add new --"] + [f"#{q['id']} {q.get('question','')[:50]}" for q in filtered]
+        edit_options = ["- Add new -"] + [f"#{q['id']} {q.get('question','')[:50]}" for q in filtered]
         edit_choice = st.selectbox("Edit or add", edit_options, key="cat_edit_choice")
 
-        if edit_choice == "-- Add new --":
+        if edit_choice == "- Add new -":
             editing_q = {
                 "id": _next_id(questions_live, "id"),
                 "question": "",
@@ -733,7 +940,7 @@ with tab_catalog:
             st.success(f"Question #{editing_q['id']} deleted.")
             st.rerun()
 
-    # -- Chains -----------------------------------------------------------------
+    # - Chains ---------------------------------
     with cat_c_tab:
         chains_live = json.loads(CHAINS_PATH.read_text(encoding="utf-8")) if CHAINS_PATH.exists() else []
 
@@ -752,10 +959,10 @@ with tab_catalog:
         st.divider()
 
         # Edit / Add
-        chain_opts = ["-- Add new --"] + [f"#{c['chain_id']} {c.get('name','')}" for c in chains_live]
+        chain_opts = ["- Add new -"] + [f"#{c['chain_id']} {c.get('name','')}" for c in chains_live]
         chain_choice = st.selectbox("Edit or add chain", chain_opts, key="cat_chain_choice")
 
-        if chain_choice == "-- Add new --":
+        if chain_choice == "- Add new -":
             editing_c = {
                 "chain_id": _next_id(chains_live, "chain_id"),
                 "name": "",

@@ -1,16 +1,16 @@
 """Build a per-question result record from collected SSE events.
 
 Extracts:
-  - cortex_traces: one entry per SQL call (FDL or Athena)
+  - sub_reasoning: FDL/Athena sub-agent reasoning text keyed by source name
+  - od_fdl_results: structured query results from the result event's data payload
   - tools_called: ordered list of orchestrator-level tool names
   - agent_response: final text from the result event
   - usage: token counts aggregated across all tool results
   - streaming_events: compact event-type summary
 
-The validator receives raw SSE events from the HTTP stream, not orchestrator
-messages. Tool result payloads arrive as JSON inside the `result` event's
-`data` field or inside sub-agent `tool_result` events, depending on how the
-service is configured.
+The validator receives raw SSE events from the HTTP stream. SQL tracing uses
+the sub-agent reasoning text (extended thinking) and the result event's od/fdl
+data — no orchestrator modification required.
 """
 
 from __future__ import annotations
@@ -55,34 +55,52 @@ def _tools_called(events: list[dict]) -> list[str]:
     return ordered
 
 
-def _extract_cortex_traces(events: list[dict]) -> list[dict]:
-    """Build cortex_traces from the `trace` SSE event emitted by the orchestrator.
+def _extract_sub_reasoning(events: list[dict]) -> dict[str, str]:
+    """Collect sub-agent reasoning text per source from `reasoning` SSE events.
 
-    The orchestrator emits a single `trace` event (before the `result` event)
-    containing a `cortex_traces` list built from the FDL/Athena agents'
-    `sql_queries` payloads. Each entry has: tool_name, sql, schemas, title,
-    is_discovery, status, row_count, error.
+    Returns a dict keyed by source name (e.g. "fdl", "athena"), with the full
+    concatenated reasoning text for each. The orchestrator passes FDL/Athena
+    extended-thinking chunks through as `{"source": "<name>", "text": "..."}`.
     """
-    traces: list[dict] = []
+    parts: dict[str, list[str]] = {}
     for ev in events:
-        if ev.get("event") != "trace":
+        if ev.get("event") != "reasoning":
             continue
-        for sq in (ev.get("data") or {}).get("cortex_traces") or []:
-            rows = sq.get("rows") or []
-            full_count = sq.get("row_count")
-            sample, _ = _slice_rows(rows)
-            traces.append({
-                "tool_name": sq.get("tool_name", ""),
-                "semantic_model": sq.get("schemas") or [],
-                "interpretation": sq.get("title") or "",
-                "generated_sql": sq.get("sql") or "",
-                "sql_results": sample,
-                "sql_row_count_full": full_count,
-                "sql_status": sq.get("status") or "UNKNOWN",
-                "is_discovery": sq.get("is_discovery", False),
-                "error": sq.get("error"),
-            })
-    return traces
+        src = (ev.get("data") or {}).get("source", "")
+        text = (ev.get("data") or {}).get("text", "")
+        if src and src != "orchestrator" and text:
+            parts.setdefault(src, []).append(text)
+    return {src: "\n\n".join(chunks) for src, chunks in parts.items()}
+
+
+def _extract_od_fdl_results(events: list[dict]) -> list[dict]:
+    """Extract od/fdl query result records from the `result` SSE event.
+
+    The orchestrator embeds od/fdl results under result.data.data.{od,fdl}.
+    Each item has columnMetaData, resultList, title (= agent interpretation),
+    and schema (= schema name used). Returns a flat list across both buckets.
+    """
+    results: list[dict] = []
+    for ev in reversed(events):
+        if ev.get("event") != "result":
+            continue
+        data = (ev.get("data") or {}).get("data") or {}
+        if not isinstance(data, dict):
+            break
+        for src in ("od", "fdl"):
+            for item in data.get(src) or []:
+                rows = item.get("resultList") or []
+                sample, _ = _slice_rows(rows)
+                results.append({
+                    "tool_name": src,
+                    "interpretation": item.get("title") or "",
+                    "schema": item.get("schema") or "",
+                    "sql": item.get("sql") or "",
+                    "column_meta": item.get("columnMetaData") or [],
+                    "rows": sample,
+                })
+        break
+    return results
 
 
 _USAGE_MAP = (
@@ -178,7 +196,8 @@ def build_record(
     turn_count: int = 1,
 ) -> dict:
     """Build the per-question result record from collected SSE events."""
-    cortex_traces = _extract_cortex_traces(events)
+    sub_reasoning = _extract_sub_reasoning(events)
+    od_fdl_results = _extract_od_fdl_results(events)
     tool_results = _extract_tool_results(events)
     clarification_questions = clarification_questions or []
 
@@ -194,7 +213,8 @@ def build_record(
         "turn_count": turn_count,
         "clarification_requested": bool(clarification_questions),
         "clarification_questions": clarification_questions,
-        "cortex_traces": cortex_traces,
+        "sub_reasoning": sub_reasoning,
+        "od_fdl_results": od_fdl_results,
         "streaming_events": _streaming_events_summary(events),
         "agent_response": _extract_text(events),
         "duration_ms": duration_ms,

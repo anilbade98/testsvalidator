@@ -172,15 +172,16 @@ def _question_card(r: dict) -> str:
     ar = ev.get("agent_response") or {}
     ic = ev.get("interpretation_coverage") or {}
     tc = ev.get("tool_compliance")
-    traces = r.get("cortex_traces") or []
+    od_fdl_results = r.get("od_fdl_results") or []
+    sub_reasoning = r.get("sub_reasoning") or {}
     per_trace = ev.get("per_trace") or []
-    sql_scores = [t for t in per_trace if t.get("sql_score") is not None]
+    sql_scores = [pr for pr in per_trace if pr.get("sql_score") is not None]
 
     ar_score = ar.get("score")
     ar_passed = ar.get("passed")
     ic_score = ic.get("score") if ic else None
     sql_mean = (
-        sum(t["sql_score"] for t in sql_scores) / len(sql_scores)
+        sum(pr["sql_score"] for pr in sql_scores) / len(sql_scores)
         if sql_scores else None
     )
 
@@ -190,61 +191,77 @@ def _question_card(r: dict) -> str:
     elif ar_passed is True:
         card_cls += " card-pass"
 
-    # ── traces (collapsible) ──────────────────────────────────────────────────
-    traces_html = ""
-    for i, t in enumerate(traces):
-        status = t.get("sql_status", "")
-        interp = _esc(t.get("interpretation") or "")
-        sql_full = _esc(t.get("generated_sql") or "")
-        rows_count = t.get("sql_row_count_full")
-        err = t.get("error")
-        sql_results = t.get("sql_results") or []
-        status_cls = "green" if status == "SUCCEEDED" else "red" if status == "FAILED" else "amber"
+    # ── od/fdl query results + SQL scores (one per result set) ────────────────
+    results_html = ""
+    for i, res in enumerate(od_fdl_results):
+        interp = _esc(res.get("interpretation") or "")
+        schema = _esc(res.get("schema") or "")
+        sql_raw = res.get("sql") or ""
+        rows = res.get("rows") or []
+
         pt = per_trace[i] if i < len(per_trace) else {}
         sql_score_val = pt.get("sql_score")
         sql_reason = _esc(pt.get("sql_reason") or "")
+        status_cls = "green" if pt.get("sql_passed") is True else "red" if pt.get("sql_passed") is False else "amber"
 
         sql_block = (
-            f'<div class="trace-sql">'
-            + _collapsible(f"SQL ({status})", f"<pre><code>{sql_full}</code></pre>")
-            + "</div>"
-        ) if sql_full else ""
-
-        results_block = ""
-        if sql_results:
-            rows_preview = _esc(json.dumps(sql_results[:5], indent=2, default=str))
-            label = f"{len(sql_results)} rows shown" + (" (truncated)" if rows_count and rows_count > len(sql_results) else "")
-            results_block = _collapsible(
-                f"Results ({label})",
+            _collapsible("SQL", f"<pre><code>{_esc(sql_raw)}</code></pre>")
+            if sql_raw else ""
+        )
+        rows_block = ""
+        if rows:
+            rows_preview = _esc(json.dumps(rows[:5], indent=2, default=str))
+            rows_block = _collapsible(
+                f"Results ({len(rows)} rows)",
                 f"<pre><code>{rows_preview}</code></pre>"
             )
-
         reason_block = (
             _collapsible("SQL judge reason", f'<div class="judge-inner">{sql_reason}</div>')
-            if sql_reason and sql_reason != "skipped — missing SQL or interpretation" else ""
+            if sql_reason and "skipped" not in sql_reason else ""
         )
 
+        score_tag = (
+            f' <span class="trace-sql-score">sql {_score(sql_score_val)}</span>'
+            if sql_score_val is not None else ""
+        )
         header = (
-            f'<span class="trace-status {status_cls}">{status}</span> '
+            f'<span class="trace-status {status_cls}">SQL</span> '
             f'<span class="trace-interp">{interp}</span>'
-            + (f' <span class="trace-rows">{rows_count} rows</span>' if rows_count is not None else "")
-            + (f' <span class="trace-sql-score">sql {_score(sql_score_val)}</span>' if sql_score_val is not None else "")
+            + (f' <span class="trace-rows">{schema}</span>' if schema else "")
+            + (f' <span class="trace-rows">{len(rows)} rows</span>' if rows else "")
+            + score_tag
         )
-        err_html = f'<div class="trace-error">{_esc(str(err))}</div>' if err else ""
 
-        traces_html += f"""
+        results_html += f"""
 <div class="trace">
   <div class="trace-header">{header}</div>
-  {err_html}
   {sql_block}
-  {results_block}
+  {rows_block}
   {reason_block}
 </div>"""
 
-    traces_section = (
-        _collapsible(f"SQL Traces ({len(traces)})", f'<div class="traces">{traces_html}</div>', open=True)
-        if traces_html else ""
-    )
+    # ── sub-agent reasoning (one collapsible per source) ─────────────────────
+    reasoning_html = ""
+    for src, text in sub_reasoning.items():
+        if not text.strip():
+            continue
+        reasoning_html += _collapsible(
+            f"{src} reasoning",
+            f"<pre><code>{_esc(text.strip())}</code></pre>",
+        )
+
+    traces_section = ""
+    if results_html or reasoning_html:
+        n_traces = len(od_fdl_results)
+        n_sources = len([s for s, t in sub_reasoning.items() if t.strip()])
+        label = f"SQL Traces ({n_traces})"
+        if n_sources:
+            label += f" + Reasoning ({n_sources} source{'s' if n_sources > 1 else ''})"
+        traces_section = _collapsible(
+            label,
+            f'<div class="traces">{results_html}{reasoning_html}</div>',
+            open=True,
+        )
 
     # ── agent response (collapsible) ─────────────────────────────────────────
     preview = _esc(agent_resp_raw[:120]) + ("…" if len(agent_resp_raw) > 120 else "")
@@ -286,6 +303,19 @@ def _question_card(r: dict) -> str:
 
     error_html = f'<div class="error-box">Error: {_esc(str(error))}</div>' if error else ""
 
+    # ── non-SQL tool results (RCA, AO) ────────────────────────────────────────
+    tool_results = r.get("tool_results") or {}
+    tool_data_section = ""
+    if tool_results:
+        parts = []
+        for tool_name, payload in tool_results.items():
+            raw = _esc(json.dumps(payload, indent=2, default=str))
+            parts.append(_collapsible(f"{tool_name} data", f"<pre><code>{raw}</code></pre>"))
+        tool_data_section = _collapsible(
+            f"Tool Data ({', '.join(tool_results)})",
+            "".join(parts),
+        )
+
     return f"""
 <div class="{card_cls}">
   <div class="card-header">
@@ -307,6 +337,7 @@ def _question_card(r: dict) -> str:
   </div>
   {error_html}
   {traces_section}
+  {tool_data_section}
   {response_section}
   {judge_section}
   {ic_section}
@@ -318,6 +349,167 @@ def _questions_section(results: list) -> str:
     return f"""
 <section>
   <h2>Questions ({len(results)})</h2>
+  {cards}
+</section>"""
+
+
+# ── Chain section builders ────────────────────────────────────────────────────
+
+def _chain_turn_card(turn: dict) -> str:
+    idx = turn.get("turn_index", 0)
+    question = _esc(turn.get("question", ""))
+    agent_resp_raw = turn.get("agent_response") or ""
+    duration = turn.get("duration_ms")
+    error = turn.get("error")
+    ev = turn.get("eval") or {}
+
+    tr = ev.get("turn_response") or {}
+    cr = ev.get("context_retention") or {}
+    per_trace = ev.get("per_trace") or []
+    od_fdl_results = turn.get("od_fdl_results") or []
+    sub_reasoning = turn.get("sub_reasoning") or {}
+
+    tr_score = tr.get("score")
+    tr_passed = tr.get("passed")
+    cr_score = cr.get("score") if cr else None
+    sql_scores = [pr for pr in per_trace if pr.get("sql_score") is not None]
+    sql_mean = (
+        sum(pr["sql_score"] for pr in sql_scores) / len(sql_scores)
+        if sql_scores else None
+    )
+
+    # SQL traces
+    results_html = ""
+    for i, res in enumerate(od_fdl_results):
+        interp = _esc(res.get("interpretation") or "")
+        schema = _esc(res.get("schema") or "")
+        sql_raw = res.get("sql") or ""
+        rows = res.get("rows") or []
+        pt = per_trace[i] if i < len(per_trace) else {}
+        sql_score_val = pt.get("sql_score")
+        sql_reason = _esc(pt.get("sql_reason") or "")
+        status_cls = "green" if pt.get("sql_passed") is True else "red" if pt.get("sql_passed") is False else "amber"
+
+        sql_block = _collapsible("SQL", f"<pre><code>{_esc(sql_raw)}</code></pre>") if sql_raw else ""
+        rows_block = (
+            _collapsible(f"Results ({len(rows)} rows)", f"<pre><code>{_esc(json.dumps(rows[:5], indent=2, default=str))}</code></pre>")
+            if rows else ""
+        )
+        reason_block = (
+            _collapsible("SQL judge reason", f'<div class="judge-inner">{sql_reason}</div>')
+            if sql_reason and "skipped" not in sql_reason else ""
+        )
+        score_tag = f' <span class="trace-sql-score">sql {_score(sql_score_val)}</span>' if sql_score_val is not None else ""
+        header = (
+            f'<span class="trace-status {status_cls}">SQL</span> '
+            f'<span class="trace-interp">{interp}</span>'
+            + (f' <span class="trace-rows">{schema}</span>' if schema else "")
+            + (f' <span class="trace-rows">{len(rows)} rows</span>' if rows else "")
+            + score_tag
+        )
+        results_html += f'<div class="trace"><div class="trace-header">{header}</div>{sql_block}{rows_block}{reason_block}</div>'
+
+    reasoning_html = "".join(
+        _collapsible(f"{src} reasoning", f"<pre><code>{_esc(text.strip())}</code></pre>")
+        for src, text in sub_reasoning.items() if text.strip()
+    )
+    traces_section = ""
+    if results_html or reasoning_html:
+        label = f"SQL Traces ({len(od_fdl_results)})"
+        if reasoning_html:
+            n_src = sum(1 for t in sub_reasoning.values() if t.strip())
+            label += f" + Reasoning ({n_src})"
+        traces_section = _collapsible(label, f'<div class="traces">{results_html}{reasoning_html}</div>', open=True)
+
+    preview = _esc(agent_resp_raw[:100]) + ("…" if len(agent_resp_raw) > 100 else "")
+    response_section = _collapsible(
+        f"Response — {preview}",
+        f'<div class="response-full">{_esc(agent_resp_raw)}</div>',
+        open=tr_passed is False,
+    )
+    tr_reason = tr.get("reason") or ""
+    cr_reason = cr.get("reason") or "" if cr else ""
+    judge_section = (
+        _collapsible("Turn Response Judge", f'<div class="judge-inner">{_esc(tr_reason)}</div>', open=True)
+        if tr_reason else ""
+    )
+    cr_section = (
+        _collapsible("Context Retention Judge", f'<div class="judge-inner">{_esc(cr_reason)}</div>')
+        if cr_reason else ""
+    )
+    error_html = f'<div class="error-box">Error: {_esc(str(error))}</div>' if error else ""
+
+    turn_cls = "chain-turn"
+    if tr_passed is False:
+        turn_cls += " chain-turn-fail"
+    elif tr_passed is True:
+        turn_cls += " chain-turn-pass"
+
+    return f"""
+<div class="{turn_cls}">
+  <div class="chain-turn-header">
+    <span class="turn-num">Turn {idx + 1}</span>
+    <span class="question">{question}</span>
+    <span class="duration">{_ms(duration)}</span>
+    {_pass_badge(tr_passed)}
+  </div>
+  <div class="card-scores">
+    <div class="score-item"><span class="score-lbl">Turn Response</span>{_score_bar(tr_score)}</div>
+    {"<div class='score-item'><span class='score-lbl'>Context Retention</span>"+_score_bar(cr_score)+"</div>" if cr_score is not None else ""}
+    {"<div class='score-item'><span class='score-lbl'>SQL Correctness</span>"+_score_bar(sql_mean)+"</div>" if sql_mean is not None else ""}
+  </div>
+  {error_html}
+  {traces_section}
+  {response_section}
+  {judge_section}
+  {cr_section}
+</div>"""
+
+
+def _chain_card(chain: dict) -> str:
+    chain_id = chain.get("chain_id", "?")
+    name = _esc(chain.get("name", ""))
+    flow = _esc(chain.get("flow", ""))
+    turns = chain.get("turns") or []
+    ce = chain.get("chain_eval") or {}
+
+    tr_mean = ce.get("turn_response_mean")
+    tr_pass_rate = ce.get("turn_response_pass_rate")
+    cr_mean = ce.get("context_retention_mean")
+    cr_pass_rate = ce.get("context_retention_pass_rate")
+
+    overall_passed = tr_pass_rate is not None and tr_pass_rate >= 0.7
+    overall_passed_val = True if (tr_pass_rate is not None and tr_pass_rate >= 0.7) else (False if tr_pass_rate is not None else None)
+
+    turns_html = "".join(_chain_turn_card(t) for t in turns)
+
+    return f"""
+<div class="chain-card">
+  <div class="chain-header">
+    <span class="chain-id">chain{chain_id}</span>
+    <span class="flow-tag">{flow}</span>
+    <span class="chain-name">{name}</span>
+    <span class="duration">{len(turns)} turns</span>
+    {_pass_badge(overall_passed_val)}
+  </div>
+  <div class="card-scores" style="margin-bottom:12px;">
+    <div class="score-item"><span class="score-lbl">Turn Response mean</span>{_score_bar(tr_mean)}</div>
+    <div class="score-item"><span class="score-lbl">Turn Response pass</span><span class="bar-label">{_pct(tr_pass_rate)}</span></div>
+    {"<div class='score-item'><span class='score-lbl'>Context Retention mean</span>"+_score_bar(cr_mean)+"</div>" if cr_mean is not None else ""}
+    {"<div class='score-item'><span class='score-lbl'>Context Retention pass</span><span class='bar-label'>"+_pct(cr_pass_rate)+"</span></div>" if cr_pass_rate is not None else ""}
+  </div>
+  <div class="chain-turns">{turns_html}</div>
+</div>"""
+
+
+def _chains_section(results: list) -> str:
+    chains = [r for r in results if "chain_id" in r]
+    if not chains:
+        return ""
+    cards = "".join(_chain_card(c) for c in chains)
+    return f"""
+<section>
+  <h2>Chains ({len(chains)})</h2>
   {cards}
 </section>"""
 
@@ -418,6 +610,21 @@ details code { background: #1e293b; color: #94a3b8; padding: 6px 10px;
 .tc-fail { color: #dc2626; font-size: 11px; font-weight: 600; }
 .error-box { background: #fee2e2; color: #dc2626; padding: 6px 10px;
              border-radius: 4px; margin-bottom: 8px; font-size: 12px; }
+
+.chain-card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 14px;
+              margin-bottom: 12px; }
+.chain-header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+                margin-bottom: 10px; border-bottom: 1px solid #f0f2f5; padding-bottom: 10px; }
+.chain-id { font-weight: 700; color: #555; font-size: 12px; min-width: 52px; }
+.chain-name { flex: 1; font-weight: 600; }
+
+.chain-turns { display: flex; flex-direction: column; gap: 8px; }
+.chain-turn { border: 1px solid #e5e7eb; border-radius: 6px; padding: 10px 12px; }
+.chain-turn-pass { border-left: 4px solid #22c55e; }
+.chain-turn-fail { border-left: 4px solid #ef4444; }
+.chain-turn-header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+                     margin-bottom: 8px; }
+.turn-num { font-size: 11px; font-weight: 700; color: #6b7280; min-width: 44px; }
 """
 
 
@@ -430,13 +637,18 @@ def generate_html_report(run_path: Path) -> Path:
     """
     run = json.loads(run_path.read_text())
     agg = run.get("aggregated_scores") or {}
-    results = run.get("results") or []
+    # Only render single-turn question cards; chain records don't have question_id.
+    results = [r for r in (run.get("results") or []) if "question_id" in r]
+
+    all_results = run.get("results") or []
+    chain_results = [r for r in all_results if "chain_id" in r]
 
     body = (
         _header_section(run)
         + _metrics_section(agg)
         + _flow_section(agg)
         + _questions_section(results)
+        + _chains_section(chain_results)
     )
 
     html = f"""<!DOCTYPE html>

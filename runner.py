@@ -10,9 +10,11 @@ Auth:
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import os
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -65,9 +67,40 @@ def resolve_auth(env: str | None = None) -> dict:
 
 
 def _refresh_auth(auth: dict, env: str | None) -> bool:
-    """Re-authenticate via Secrets Manager and mutate auth in-place."""
+    """Re-authenticate and mutate auth in-place.
+
+    Tries three paths in order:
+    1. EVAL_AUTH_EMAIL / EVAL_AUTH_PASSWORD env vars (set by the Streamlit UI
+       when the user logged in with email+password — enables refresh for long runs).
+    2. Secrets Manager via resolve_auth() when --env is provided.
+    3. Cannot refresh (bearer-only mode).
+    """
+    email = os.environ.get("EVAL_AUTH_EMAIL", "").strip()
+    password = os.environ.get("EVAL_AUTH_PASSWORD", "").strip()
+    auth_env = os.environ.get("EVAL_AUTH_ENV", "").strip()
+
+    if email and password and auth_env:
+        try:
+            url = f"https://na1.{auth_env}.nice-incontact.com/public/authentication/v1/login"
+            resp = requests.post(url, json={"email": email, "password": password}, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+            token = data.get("token", "")
+            if not token:
+                raise ValueError("Empty token from auth API")
+            auth["token"] = token
+            auth["_bearer_override"] = False  # allow future refreshes
+            if data.get("tenantId"):
+                auth["tenant_id"] = data["tenantId"]
+            os.environ["EVAL_BEARER_TOKEN"] = token
+            return True
+        except Exception as e:
+            print(f"  Token refresh via email+password failed: {e}")
+            return False
+
     if auth.get("_bearer_override"):
         return False
+
     try:
         fresh = resolve_auth(env=env)
         auth["token"] = fresh["token"]
@@ -89,6 +122,7 @@ def _stream_request(
     session_id: str,
     refresh: bool = False,
     context: dict | None = None,
+    reference_date: str | None = None,
 ) -> list[dict]:
     """POST to /api/v1/chat/stream and collect all SSE events."""
     url = f"{base_url.rstrip('/')}/api/v1/chat/stream"
@@ -97,6 +131,8 @@ def _stream_request(
         payload["refresh"] = True
     if context:
         payload["context"] = context
+    if reference_date:
+        payload["configuration"] = {"REFERENCE_DATE": reference_date}
 
     headers = {
         "Authorization": f"Bearer {auth['token']}",
@@ -161,6 +197,7 @@ def _run_one(
     run_id: str,
     env: str | None = None,
     tunnel_pool=None,
+    reference_date: str | None = None,
 ) -> dict:
     qid = question_meta["id"]
     session_id = f"validator-{run_id}-{qid}"
@@ -170,10 +207,20 @@ def _run_one(
     context = question_meta.get("context_fixture") if flow in ("refresh", "context") else None
 
     # Ensure required tunnels are alive just before the HTTP call.
+    # A tunnel setup failure (e.g. unconfigured hostname) records an error for
+    # this question and returns early — it must not crash the whole run.
     if tunnel_pool is not None:
         expected_tools = question_meta.get("expected_tools") or []
         if expected_tools:
-            tunnel_pool.ensure_for(expected_tools)
+            try:
+                tunnel_pool.ensure_for(expected_tools)
+            except Exception as tunnel_err:
+                return build_record(
+                    events=[],
+                    question_meta=question_meta,
+                    duration_ms=0,
+                    error=f"Tunnel setup failed: {tunnel_err}",
+                )
 
     all_events: list[dict] = []
     clarification_questions: list[str] = []
@@ -182,8 +229,12 @@ def _run_one(
     t0 = time.time()
     error: str | None = None
 
-    # Flows where tool calls are not expected — break after the first response.
-    _NO_TOOL_FLOWS = {"conversational"}
+    # Flows that complete in a single round-trip — break after the first response
+    # regardless of whether tool calls were detected in the stream.
+    # refresh: handled server-side by refresh_handler.py which yields a single
+    #   `result` event directly (no tool_start/sub_tool_start emitted).
+    # conversational: simple text exchange, no data tools expected.
+    _SINGLE_TURN_FLOWS = {"conversational", "refresh"}
 
     try:
         for turn_idx in range(MAX_CONVERSATION_TURNS):
@@ -193,19 +244,17 @@ def _run_one(
                 session_id=session_id,
                 refresh=refresh and turn_idx == 0,
                 context=context if turn_idx == 0 else None,
+                reference_date=reference_date,
             )
             enriched = [{"turn_idx": turn_idx, **ev} for ev in turn_events]
             all_events.extend(enriched)
             turn_count = turn_idx + 1
 
-            # Detect tool activity at orchestrator level OR sub-agent level.
-            # sub_tool_start covers refresh flows where the service re-runs
-            # queries via the data agent without a top-level tool_start event.
             made_tool_calls = any(
                 ev.get("event") in ("tool_start", "sub_tool_start")
                 for ev in enriched
             )
-            if made_tool_calls or flow in _NO_TOOL_FLOWS:
+            if made_tool_calls or flow in _SINGLE_TURN_FLOWS:
                 break
 
             clarification_questions.append(_extract_text(enriched))
@@ -301,13 +350,13 @@ def _save(out_path: Path, metadata: dict, results: list[dict]) -> None:
 
 
 def _summarize(r: dict) -> str:
-    traces = r.get("cortex_traces") or []
+    od_fdl = r.get("od_fdl_results") or []
     usage = r.get("usage") or {}
     return (
         f"  qid={r['question_id']:3d} | flow={r.get('flow', '?'):12s}"
         f" | {r['duration_ms']/1000:.1f}s"
         f" | turns={r.get('turn_count', 1)}"
-        f" | sql_calls={len(traces)}"
+        f" | sql_results={len(od_fdl)}"
         f" | tokens={usage.get('total_tokens', 0)}"
         f" (in={usage.get('input_tokens', 0)} out={usage.get('output_tokens', 0)}"
         f" cr={usage.get('cache_read_tokens', 0)} cw={usage.get('cache_creation_tokens', 0)})"
@@ -326,32 +375,67 @@ async def run_all(
     filter_config: dict,
     env: str | None = None,
     tunnel_pool=None,
+    workers: int = 1,
+    reference_date: str | None = None,
 ) -> dict:
     run_id = f"run_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
     metadata = _build_run_metadata(
         run_id=run_id, questions=questions, filter_config=filter_config,
         base_url=base_url, env=env,
     )
-    results: list[dict] = []
     total = len(questions)
 
-    for i, q in enumerate(questions, 1):
-        print(f"\n[{i}/{total}] q{q['id']} [{q.get('flow', '?')}] ({q['complexity']}): {q['question']}")
-        record = _run_one(q, auth, base_url, run_id=run_id, env=env, tunnel_pool=tunnel_pool)
+    if workers <= 1:
+        # Sequential path — incremental saves, clear progress output.
+        results: list[dict] = []
+        for i, q in enumerate(questions, 1):
+            print(f"\n[{i}/{total}] q{q['id']} [{q.get('flow', '?')}] ({q['complexity']}): {q['question']}")
+            record = _run_one(q, auth, base_url, run_id=run_id, env=env, tunnel_pool=tunnel_pool, reference_date=reference_date)
+            if _has_auth_error(record.get("od_fdl_results") or [], record.get("error")):
+                print("  Auth error — refreshing token and retrying ...")
+                if _refresh_auth(auth, env):
+                    print(f"  Refreshed (tenant_id={auth.get('tenant_id')!r}), retrying ...")
+                    record = _run_one(q, auth, base_url, run_id=run_id, env=env, tunnel_pool=tunnel_pool, reference_date=reference_date)
+                else:
+                    print("  Cannot refresh. Continuing with stale token.")
+            results.append(record)
+            print(_summarize(record))
+            _save(out_path, metadata, results)
+        return {**metadata, "results": results}
 
-        if _has_auth_error(record.get("cortex_traces") or [], record.get("error")):
-            print("  Auth error — refreshing token and retrying ...")
-            if _refresh_auth(auth, env):
-                print(f"  Refreshed (tenant_id={auth.get('tenant_id')!r}), retrying ...")
-                record = _run_one(q, auth, base_url, run_id=run_id, env=env, tunnel_pool=tunnel_pool)
-            else:
-                print("  Cannot refresh. Continuing with stale token.")
+    # Parallel path — run up to `workers` questions concurrently.
+    # Results are kept in insertion order; the file is saved after every
+    # completion so partial results are always on disk.
+    sem = asyncio.Semaphore(workers)
+    auth_lock = asyncio.Lock()   # serialise token refresh across workers
+    save_lock = asyncio.Lock()   # serialise file writes
+    completed: list[dict] = []
+    done_count = 0
 
-        results.append(record)
-        print(_summarize(record))
-        _save(out_path, metadata, results)
+    async def _run_async(idx: int, q: dict) -> None:
+        nonlocal done_count
+        async with sem:
+            record = await asyncio.to_thread(
+                _run_one, q, auth, base_url,
+                run_id=run_id, env=env, tunnel_pool=tunnel_pool, reference_date=reference_date,
+            )
+            if _has_auth_error(record.get("od_fdl_results") or [], record.get("error")):
+                async with auth_lock:
+                    refreshed = _refresh_auth(auth, env)
+                if refreshed:
+                    record = await asyncio.to_thread(
+                        _run_one, q, auth, base_url,
+                        run_id=run_id, env=env, tunnel_pool=tunnel_pool, reference_date=reference_date,
+                    )
+            async with save_lock:
+                done_count += 1
+                print(f"\n[{done_count}/{total}] q{q['id']} [{q.get('flow', '?')}] ({q['complexity']}): {q['question']}")
+                print(_summarize(record))
+                completed.append(record)
+                _save(out_path, metadata, completed)
 
-    return {**metadata, "results": results}
+    await asyncio.gather(*[_run_async(i, q) for i, q in enumerate(questions)])
+    return {**metadata, "results": completed}
 
 
 def load_questions(path: Path) -> list[dict]:

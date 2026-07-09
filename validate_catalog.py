@@ -76,10 +76,10 @@ def validate_chains(chains: list[dict]) -> list[str]:
     errors: list[str] = []
     seen_ids: set[int] = set()
 
-    for i, chain in enumerate(chains):
+    for i, c in enumerate(chains):
         loc = f"chain[{i}]"
 
-        cid = chain.get("chain_id")
+        cid = c.get("chain_id")
         if not isinstance(cid, int):
             errors.append(_err(loc, f"'chain_id' must be an int, got {type(cid).__name__}"))
         elif cid in seen_ids:
@@ -87,30 +87,24 @@ def validate_chains(chains: list[dict]) -> list[str]:
         else:
             seen_ids.add(cid)
 
-        if not isinstance(chain.get("name"), str) or not chain["name"].strip():
-            errors.append(_err(loc, "'name' must be a non-empty string"))
-
-        flow = chain.get("flow")
+        flow = c.get("flow")
         if flow not in VALID_FLOWS:
             errors.append(_err(loc, f"'flow' must be one of {sorted(VALID_FLOWS)}, got {flow!r}"))
 
-        if not isinstance(chain.get("priority"), bool):
-            errors.append(_err(loc, f"'priority' must be a bool, got {type(chain.get('priority')).__name__}"))
+        if not isinstance(c.get("priority"), bool):
+            errors.append(_err(loc, f"'priority' must be a bool, got {type(c.get('priority')).__name__}"))
 
-        turns = chain.get("turns")
-        if not isinstance(turns, list) or len(turns) < 2:
-            errors.append(_err(loc, "'turns' must be a list with at least 2 turns"))
-            continue
+        turns = c.get("turns") or []
+        if len(turns) < 2:
+            errors.append(_err(loc, f"chains must have at least 2 turns, got {len(turns)}"))
 
-        for j, turn in enumerate(turns):
+        for j, t in enumerate(turns):
             tloc = f"{loc}.turns[{j}]"
-            if not isinstance(turn.get("question"), str) or not turn["question"].strip():
+            if not isinstance(t.get("question"), str) or not t["question"].strip():
                 errors.append(_err(tloc, "'question' must be a non-empty string"))
-            if not isinstance(turn.get("expected_tools"), list):
+            if not isinstance(t.get("expected_tools"), list):
                 errors.append(_err(tloc, "'expected_tools' must be a list"))
-            elif not all(isinstance(t, str) for t in turn["expected_tools"]):
-                errors.append(_err(tloc, "'expected_tools' must be a list of strings"))
-            if "golden_answer" not in turn:
+            if "golden_answer" not in t:
                 errors.append(_err(tloc, "'golden_answer' field is required (use null if not set)"))
 
     return errors

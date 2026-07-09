@@ -38,6 +38,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -70,8 +71,8 @@ _AO_SERVICE = "ao-agent-svc"
 
 # RCA hostnames by environment (public hostname resolves inside VPC via Route53)
 _RCA_HOSTS = {
+    "dev":     "eai-anomaly-detection.illuminate.service.nicecxone-dev.com",
     "staging": "eai-anomaly-detection.illuminate.service.nicecxone-staging.com",
-    # TODO: verify for other envs
 }
 
 _READY_TIMEOUT = 60
@@ -270,6 +271,7 @@ class TunnelPool:
         self._ports = {"fdl": fdl_port, "od": od_port, "ao": ao_port, "rca": rca_port}
         self._tunnels: dict[str, ServiceTunnel] = {}
         self._jump_id: str | None = None
+        self._lock = threading.Lock()  # serialises tunnel creation/start across worker threads
 
     def _get_jump_id(self) -> str:
         if not self._jump_id:
@@ -320,15 +322,22 @@ class TunnelPool:
             if t in TOOL_SERVICE and TOOL_SERVICE[t] is not None
         }
         for service in sorted(services):
-            if service not in self._tunnels:
-                self._tunnels[service] = self._make_tunnel(service)
-            tunnel = self._tunnels[service]
-            if not tunnel.is_alive():
-                action = "restarting" if tunnel._proc is not None else "starting"
-                print(f"  [{service}] {action} SSM tunnel "
-                      f"localhost:{tunnel.local_port} -> {tunnel.remote_host}:{tunnel.remote_port}")
-                tunnel.start()
-                print(f"  [{service}] ready")
+            # Lock prevents the check-then-create race when multiple worker
+            # threads call ensure_for simultaneously. Without it, N threads all
+            # see `service not in _tunnels`, spawn N SSM processes for the same
+            # port, and all but one fail — each waiting up to 60s before giving
+            # up. The lock serialises startup; tunnels are created only once per
+            # run so the one-at-a-time overhead is negligible.
+            with self._lock:
+                if service not in self._tunnels:
+                    self._tunnels[service] = self._make_tunnel(service)
+                tunnel = self._tunnels[service]
+                if not tunnel.is_alive():
+                    action = "restarting" if tunnel._proc is not None else "starting"
+                    print(f"  [{service}] {action} SSM tunnel "
+                          f"localhost:{tunnel.local_port} -> {tunnel.remote_host}:{tunnel.remote_port}")
+                    tunnel.start()
+                    print(f"  [{service}] ready")
 
     def stop_all(self) -> None:
         for t in self._tunnels.values():

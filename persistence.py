@@ -82,15 +82,13 @@ class RunRecord(TypedDict, total=False):
     comparison: dict
 
 
-class CortexTrace(TypedDict, total=False):
-    """One SQL call's trace inside a question record's `cortex_traces` list."""
+class OdFdlResult(TypedDict, total=False):
+    """One od/fdl query result inside a question record's `od_fdl_results` list."""
     tool_name: str
     interpretation: str
-    generated_sql: str
-    sql_results: list              # sampled rows (the writer's input is already truncated)
-    sql_row_count_full: int
-    status: str                    # SUCCEEDED | FAILED | REJECTED
-    error: str
+    schema: str
+    column_meta: list
+    rows: list
 
 
 class QuestionRecord(TypedDict, total=False):
@@ -114,7 +112,7 @@ class QuestionRecord(TypedDict, total=False):
     input_tokens: int
     output_tokens: int
     cache_read_tokens: int
-    cortex_traces: list[CortexTrace]
+    od_fdl_results: list[OdFdlResult]
 
     # Per-metric scores (pass threshold 0.7)
     agent_response_score: float
@@ -125,7 +123,7 @@ class QuestionRecord(TypedDict, total=False):
     interpretation_reason: str
     sql_correctness_score: float   # None for context / conversational
     sql_correctness_passed: bool
-    sql_per_trace_scores: list     # per-SQL-call breakdown for multi-query questions
+    sql_per_trace_scores: list  # per-sub-agent-reasoning breakdown
 
     # Run-time housekeeping
     error: str                     # absent on success
@@ -272,11 +270,11 @@ class DynamoDBWriter:
 #         "question_id": 1, "question": "...", "flow": "fdl", "complexity": "basic",
 #         "priority": true, "agent_response": "...", "duration_ms": 28100,
 #         "usage": {"total_tokens": ..., "input_tokens": ..., ...},
-#         "cortex_traces": [...],
+#         "od_fdl_results": [...],
 #         "eval": {
 #           "agent_response":         {"score": 0.91, "passed": true, "reason": "..."},
 #           "interpretation_coverage":{"score": 0.84, "passed": true, "reason": "..."},
-#           "per_trace": [{"sql_score": 0.87, "sql_passed": true, "sql_reason": "..."}],
+#           "per_trace": [{"source": "fdl", "sql_score": 0.87, "sql_passed": true, "sql_reason": "..."}],
 #           "tool_compliance":        {"compliant": true},
 #         },
 #         "error": null,
@@ -350,17 +348,12 @@ def _build_question_record(run_id: str, result: dict) -> QuestionRecord:
     ic = ev.get("interpretation_coverage") or {}
     per_trace = ev.get("per_trace") or []
 
-    # `sql_correctness` per-question is the mean across that question's SQL
-    # calls (each per-trace entry has its own score). The aggregator computes
-    # the run-level mean; here we just preserve the per-trace breakdown plus
-    # a rolled-up score so the comparator has both granularities.
-    sql_scores = [pt.get("sql_score") for pt in per_trace if pt.get("sql_score") is not None]
+    # `sql_correctness` per-question is the mean across that question's sub-agent
+    # reasoning blocks. The aggregator computes the run-level mean; here we preserve
+    # the per-reasoning breakdown plus a rolled-up score for the comparator.
+    sql_scores = [pr.get("sql_score") for pr in per_trace if pr.get("sql_score") is not None]
     sql_mean = sum(sql_scores) / len(sql_scores) if sql_scores else None
-    # `sql_correctness_passed`: True iff every trace has an explicit pass verdict.
-    # A trace with `sql_passed=None` (evaluator skipped — missing SQL/interpretation)
-    # is N/A, not a failure — so we surface `None` for the whole question rather
-    # than letting one missing verdict mark the question as failed.
-    sql_verdicts = [pt.get("sql_passed") for pt in per_trace]
+    sql_verdicts = [pr.get("sql_passed") for pr in per_trace]
     if not sql_verdicts or any(v is None for v in sql_verdicts):
         sql_passed_all: bool | None = None
     else:
@@ -379,7 +372,7 @@ def _build_question_record(run_id: str, result: dict) -> QuestionRecord:
         "input_tokens":      usage.get("input_tokens"),
         "output_tokens":     usage.get("output_tokens"),
         "cache_read_tokens": usage.get("cache_read_tokens"),
-        "cortex_traces":     result.get("cortex_traces"),
+        "od_fdl_results":    result.get("od_fdl_results"),
         "agent_response_score":  ar.get("score"),
         "agent_response_passed": ar.get("passed"),
         "agent_response_reason": ar.get("reason"),
@@ -388,7 +381,7 @@ def _build_question_record(run_id: str, result: dict) -> QuestionRecord:
         "interpretation_reason": ic.get("reason"),
         "sql_correctness_score":  sql_mean,
         "sql_correctness_passed": sql_passed_all,
-        "sql_per_trace_scores":   per_trace,
+        "sql_per_trace_scores": per_trace,
         "error":           result.get("error"),
         # `regression_flag` is populated by CSA-85050. Absent here.
     }

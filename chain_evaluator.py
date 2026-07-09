@@ -7,7 +7,9 @@ metrics (context_retention) to results produced by chain_runner.py.
 from __future__ import annotations
 
 import json
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from deepeval.test_case import LLMTestCase
@@ -51,7 +53,8 @@ def _eval_turn(
 ) -> dict:
     question = turn.get("question") or ""
     response = turn.get("agent_response") or ""
-    traces = turn.get("cortex_traces") or []
+    sub_reasoning = turn.get("sub_reasoning") or {}
+    od_fdl_results = turn.get("od_fdl_results") or []
     error = turn.get("error")
     turn_index = turn.get("turn_index", 0)
 
@@ -65,8 +68,16 @@ def _eval_turn(
         eval_out["skipped_reason"] = f"upstream error: {error}"
         return eval_out
 
-    # Schema docs
-    touched_schemas = list({s for t in traces for s in (t.get("semantic_model") or [])})
+    # Schema docs — same per-result logic as evaluator.py
+    def _schema_ctx_for(r: dict) -> str:
+        schema_name = r.get("schema") or ""
+        if schema_name:
+            return schema_docs_for_schemas([schema_name], schema_cache)
+        src_prefix = "fdl/" if r.get("tool_name") == "fdl" else "athena/"
+        src_docs = {k: v for k, v in schema_cache.items() if k.startswith(src_prefix)}
+        return "\n\n---\n\n".join(src_docs.values()) if src_docs else all_schema_docs(schema_cache)
+
+    touched_schemas = list({r.get("schema") or "" for r in od_fdl_results} - {""})
     context_docs = (
         schema_docs_for_schemas(touched_schemas, schema_cache)
         if touched_schemas else all_schema_docs(schema_cache)
@@ -77,48 +88,54 @@ def _eval_turn(
     ath_conv = ATHENA_SQL_CONVENTIONS if flow in {"od", "advisory", "mixed"} else ""
     sql_conv = "\n".join(filter(None, [fdl_conv, ath_conv]))
 
-    # sql_correctness per trace
     if flow in SQL_FLOWS:
-        for t in traces:
-            sql = t.get("generated_sql") or ""
-            interp = t.get("interpretation") or ""
+        for r in od_fdl_results:
+            sql = r.get("sql") or ""
+            interp = r.get("interpretation") or ""
             if not sql or not interp:
                 eval_out["per_trace"].append({
                     "sql_score": None, "sql_passed": None,
-                    "sql_reason": "skipped - missing SQL or interpretation",
+                    "sql_reason": "skipped — missing SQL or interpretation",
                 })
                 continue
-            schemas = t.get("semantic_model") or []
-            ctx = schema_docs_for_schemas(schemas, schema_cache) if schemas else context_docs
-            ctx_parts = [ctx]
+            schema_ctx = _schema_ctx_for(r)
+            ctx_parts = [schema_ctx]
             if sql_conv:
                 ctx_parts.append(sql_conv)
             score, passed, reason = _safe_measure(
                 single_metrics["sql_correctness"],
                 LLMTestCase(input=interp, actual_output=sql, context=ctx_parts),
             )
-            eval_out["per_trace"].append({"sql_score": score, "sql_passed": passed, "sql_reason": reason})
+            eval_out["per_trace"].append({
+                "sql_score": score, "sql_passed": passed, "sql_reason": reason,
+            })
 
     # turn_response
     if response:
         results_ctx = "\n---\n".join(
             json.dumps({
-                "interpretation": t.get("interpretation"),
-                "generated_sql": t.get("generated_sql"),
-                "sql_status": t.get("sql_status"),
-                "total_row_count": t.get("sql_row_count_full"),
-                "results": t.get("sql_results"),
+                "interpretation": r.get("interpretation"),
+                "schema": r.get("schema"),
+                "columns": [c.get("columnName") for c in (r.get("column_meta") or [])],
+                "results": r.get("rows"),
             }, default=str)
-            for t in traces
+            for r in od_fdl_results
         )
         tool_results = turn.get("tool_results") or {}
         tool_ctx = json.dumps(tool_results, default=str) if tool_results else None
 
+        reasoning_ctx = "\n\n".join(
+            f"## Agent reasoning ({src})\n{text.strip()}"
+            for src, text in sub_reasoning.items()
+            if text.strip()
+        )
         ctx_parts = []
         if results_ctx:
             ctx_parts.append(results_ctx)
         if tool_ctx:
             ctx_parts.append(f"Non-SQL tool response data:\n{tool_ctx}")
+        if reasoning_ctx:
+            ctx_parts.append(reasoning_ctx)
         ctx_parts.append(context_docs)
 
         score, passed, reason = _safe_measure(
@@ -143,44 +160,63 @@ def _eval_turn(
     return eval_out
 
 
-def evaluate_chain_file(run_path: Path, *, skip_scored: bool = False) -> dict:
-    """Score all turns in all chains in-place. Returns updated run dict."""
+def evaluate_chain_file(run_path: Path, *, skip_scored: bool = False, workers: int = 1) -> dict:
+    """Score all turns in all chains in-place. Returns updated run dict.
+
+    workers: parallel chains (each chain gets its own BedrockJudge). Turns
+    within a chain are always scored sequentially — context_retention requires
+    prior turns to be evaluated first.
+    """
     run = json.loads(run_path.read_text())
     schema_cache = load_schema_docs()
-    judge = BedrockJudge()
-    single_metrics = build_metrics(judge, threshold=PASS_THRESHOLD, verbose=True)
-    chain_metrics = build_chain_metrics(judge, threshold=PASS_THRESHOLD, verbose=True)
+    chain_results = [r for r in (run.get("results") or []) if "chain_id" in r]
+    total_chains = len(chain_results)
+    write_lock = threading.Lock()
+    counter = [0]
 
-    total_chains = len(run.get("results") or [])
-    for ci, chain in enumerate(run["results"], 1):
+    def _score_chain(chain: dict) -> None:
+        # Fresh judge per chain so parallel threads don't share metric state.
+        judge = BedrockJudge()
+        single_metrics = build_metrics(judge, threshold=PASS_THRESHOLD, verbose=False)
+        chain_metrics_map = build_chain_metrics(judge, threshold=PASS_THRESHOLD, verbose=False)
         flow = chain.get("flow") or ""
         turns = chain.get("turns") or []
-        print(f"\n[chain {ci}/{total_chains}] {chain.get('name','?')} [{flow}] "
-              f"- {len(turns)} turns")
 
         for ti, turn in enumerate(turns):
             if skip_scored and turn_fully_scored(turn):
-                print(f"  turn {ti} - already scored, skipping")
                 continue
-
             if ti > 0:
                 time.sleep(EVAL_INTER_TURN_PAUSE)
-
-            print(f"  turn {ti} - scoring ...")
             eval_block = _eval_turn(
                 turn,
                 prior_turns=turns,
                 flow=flow,
                 single_metrics=single_metrics,
-                chain_metrics=chain_metrics,
+                chain_metrics=chain_metrics_map,
                 schema_cache=schema_cache,
             )
             turn["eval"] = eval_block
-            _print_turn_summary(turn, eval_block)
+
+        chain["chain_eval"] = aggregate_chain(turns)
+
+        with write_lock:
+            counter[0] += 1
+            n = counter[0]
+            print(f"\n[chain {n}/{total_chains}] {chain.get('name','?')} [{flow}] "
+                  f"- {len(turns)} turns")
+            for turn in turns:
+                _print_turn_summary(turn, turn.get("eval") or {})
             run_path.write_text(json.dumps(run, indent=2, default=str))
 
-        # Aggregate chain-level scores
-        chain["chain_eval"] = aggregate_chain(turns)
+    if workers <= 1:
+        for chain in chain_results:
+            _score_chain(chain)
+    else:
+        print(f"[chain-eval] Scoring {total_chains} chains with {workers} parallel workers ...")
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(_score_chain, c): c for c in chain_results}
+            for fut in as_completed(futures):
+                fut.result()
 
     run_path.write_text(json.dumps(run, indent=2, default=str))
     return run
