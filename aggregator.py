@@ -24,6 +24,8 @@ def aggregate(run: dict) -> dict:
     tokens_total = [(r.get("usage") or {}).get("total_tokens", 0) for r in results]
     tokens_in = [(r.get("usage") or {}).get("input_tokens", 0) for r in results]
     tokens_out = [(r.get("usage") or {}).get("output_tokens", 0) for r in results]
+    sql_calls = [len(r.get("od_fdl_results") or []) for r in results]
+    tool_calls = [len(r.get("tools_called") or []) for r in results]
 
     # Per-metric accumulators
     interp_scores: list[float] = []
@@ -92,6 +94,8 @@ def aggregate(run: dict) -> dict:
         "avg_total_tokens": _safe_mean(tokens_total),
         "avg_input_tokens": _safe_mean(tokens_in),
         "avg_output_tokens": _safe_mean(tokens_out),
+        "avg_sql_call_count": _safe_mean(sql_calls),
+        "avg_tool_call_count": _safe_mean(tool_calls),
         "tool_compliance": {
             "n": tool_compliance_total,
             "passed": tool_compliance_passed,

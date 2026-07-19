@@ -68,6 +68,8 @@ class RunRecord(TypedDict, total=False):
     question_count: int
     avg_duration_ms: float
     avg_total_tokens: float
+    avg_sql_call_count: float
+    avg_tool_call_count: float
 
     # Per-metric aggregates (mean + pass rate at threshold 0.7)
     agent_response_mean: float
@@ -113,6 +115,8 @@ class QuestionRecord(TypedDict, total=False):
     output_tokens: int
     cache_read_tokens: int
     od_fdl_results: list[OdFdlResult]
+    sql_call_count: int
+    tool_call_count: int
 
     # Per-metric scores (pass threshold 0.7)
     agent_response_score: float
@@ -170,9 +174,7 @@ def _drop_empty(record: dict) -> dict:
 class DynamoDBWriter:
     """Writes validator run + question records to the two DynamoDB tables.
 
-    Region resolution: `AWS_REGION` > `AWS_DEFAULT_REGION` > `us-west-2`
-    (where the analytics-agentic stack is deployed). The writer no longer
-    takes a `region` constructor arg — anyone wanting to override should
+    The writer no longer takes a `region` constructor arg — anyone wanting to override should
     set the env var instead. We *do* pass `region_name` to boto3 explicitly
     rather than relying on its default-session lookup, because that lookup
     is cached on first use process-wide and would otherwise pin the writer
@@ -196,12 +198,7 @@ class DynamoDBWriter:
 
     def _ensure_clients(self) -> None:
         if self._dynamodb is None:
-            region = (
-                os.environ.get("AWS_REGION")
-                or os.environ.get("AWS_DEFAULT_REGION")
-                or "us-west-2"
-            )
-            self._dynamodb = boto3.resource("dynamodb", region_name=region)
+            self._dynamodb = boto3.resource("dynamodb")
             self._runs_table = self._dynamodb.Table(self.runs_table_name)
             self._questions_table = self._dynamodb.Table(self.questions_table_name)
 
@@ -330,13 +327,16 @@ def _build_run_record(run: dict) -> RunRecord:
         "question_count": agg.get("total"),
         "avg_duration_ms": agg.get("avg_duration_ms"),
         "avg_total_tokens": agg.get("avg_total_tokens"),
+        "avg_sql_call_count": agg.get("avg_sql_call_count"),
+        "avg_tool_call_count": agg.get("avg_tool_call_count"),
         "agent_response_mean":      ar.get("mean"),
         "agent_response_pass_rate": ar.get("pass_rate"),
         "interpretation_mean":      ic.get("mean"),
         "interpretation_pass_rate": ic.get("pass_rate"),
         "sql_correctness_mean":      sc.get("mean"),
         "sql_correctness_pass_rate": sc.get("pass_rate"),
-        # `overall_status` and `comparison` are populated by CSA-85050. Absent here.
+        "overall_status": run.get("overall_status"),
+        "comparison":     run.get("comparison"),
     }
 
 
@@ -373,6 +373,8 @@ def _build_question_record(run_id: str, result: dict) -> QuestionRecord:
         "output_tokens":     usage.get("output_tokens"),
         "cache_read_tokens": usage.get("cache_read_tokens"),
         "od_fdl_results":    result.get("od_fdl_results"),
+        "sql_call_count":    len(result.get("od_fdl_results") or []),
+        "tool_call_count":   len(result.get("tools_called") or []),
         "agent_response_score":  ar.get("score"),
         "agent_response_passed": ar.get("passed"),
         "agent_response_reason": ar.get("reason"),
@@ -383,7 +385,7 @@ def _build_question_record(run_id: str, result: dict) -> QuestionRecord:
         "sql_correctness_passed": sql_passed_all,
         "sql_per_trace_scores": per_trace,
         "error":           result.get("error"),
-        # `regression_flag` is populated by CSA-85050. Absent here.
+        "regression_flag": result.get("regression_flag"),
     }
 
 

@@ -39,6 +39,7 @@ from datetime import datetime  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 from tests.validator.aggregator import print_summary, write_aggregated  # noqa: E402
+from tests.validator.comparator import DEFAULT_DELTA, DEFAULT_MIN_BASELINE_N, DEFAULT_N  # noqa: E402
 from tests.validator.runner import (  # noqa: E402
     VALID_FLOWS,
     load_questions,
@@ -92,6 +93,82 @@ def _read_run_meta_base_url(run_path: Path) -> str | None:
             return (json.load(fh).get("meta") or {}).get("base_url")
     except Exception:
         return None
+
+
+def _compare_run(
+    run_path: Path,
+    *,
+    n: int = DEFAULT_N,
+    delta: float = DEFAULT_DELTA,
+    min_baseline_n: int = DEFAULT_MIN_BASELINE_N,
+) -> int:
+    """Run regression comparison after a persist. Returns 1 if regressions detected, else 0.
+
+    Best-effort: on any failure, logs a warning and returns 0 so a transient AWS
+    error doesn't fail the run when the local JSON result is intact.
+    """
+    try:
+        from tests.validator.comparator import compare_and_persist
+        comparison = compare_and_persist(run_path, n=n, delta=delta, min_baseline_n=min_baseline_n)
+        _print_regression_summary(comparison)
+        return 1 if comparison.get("overall_status") == "REGRESSION" else 0
+    except Exception as exc:
+        print(f"WARNING: Comparison failed: {type(exc).__name__}: {exc}")
+        print(f"   Local result file is intact at {run_path}.")
+        return 0
+
+
+def _print_regression_summary(comparison: dict) -> None:
+    status = comparison.get("overall_status", "UNKNOWN")
+    baseline_runs = comparison.get("baseline_runs", 0)
+    regressions = comparison.get("regressions") or []
+    improvements = comparison.get("improvements") or []
+
+    print()
+    print("=" * 60)
+    print("REGRESSION REPORT")
+    print("=" * 60)
+    print(f"  Baseline: {baseline_runs} run(s)")
+    print(f"  Status:   {status}")
+
+    if regressions:
+        print(f"\n  REGRESSIONS ({len(regressions)}):")
+        for r in regressions:
+            print(
+                f"    q{r['question_id']:<4d} {r['metric']:<26s}"
+                f" baseline={r['baseline_mean']:.3f}"
+                f" current={r['current_score']:.3f}"
+                f" delta={r['delta']:+.3f}"
+            )
+    else:
+        print("\n  No regressions detected.")
+
+    if improvements:
+        print(f"\n  IMPROVEMENTS ({len(improvements)}):")
+        for r in improvements:
+            print(
+                f"    q{r['question_id']:<4d} {r['metric']:<26s}"
+                f" baseline={r['baseline_mean']:.3f}"
+                f" current={r['current_score']:.3f}"
+                f" delta={r['delta']:+.3f}"
+            )
+
+    performance = comparison.get("performance") or {}
+    if performance:
+        print("\n  PERFORMANCE vs BASELINE:")
+        for entry in performance.values():
+            if "delta_pct" in entry:
+                delta_str = f"{entry['delta_pct']:+.1f}%"
+            else:
+                delta_str = f"{entry['delta']:+.2f}"
+            arrow = "▲" if (entry.get("delta_pct") or entry.get("delta") or 0) > 0 else "▼"
+            print(
+                f"    {entry['label']:<30s}"
+                f" baseline={entry['baseline_mean']:,.1f}"
+                f" current={entry['current']:,.1f}"
+                f" {arrow} {delta_str}"
+            )
+    print("=" * 60)
 
 
 def _write_html(run_path: Path) -> None:
@@ -160,6 +237,7 @@ async def _async_main(ns: argparse.Namespace) -> int:
         agg = write_aggregated(run_path)
         print_summary(agg)
         _write_html(run_path)
+        exit_code = 0
         if ns.persist:
             stored_base_url = _read_run_meta_base_url(run_path)
             if _should_refuse_local_persist(stored_base_url, ns.allow_local_persist):
@@ -171,7 +249,14 @@ async def _async_main(ns: argparse.Namespace) -> int:
                 )
                 return 1
             _persist_to_dynamodb(run_path)
-        return 0
+            if not ns.no_compare:
+                exit_code = _compare_run(
+                    run_path,
+                    n=ns.baseline_n,
+                    delta=ns.regression_delta,
+                    min_baseline_n=ns.min_baseline_n,
+                )
+        return exit_code
 
     # ── SSM tunnels (optional, local runs only) ───────────────────────────────
     tunnel_pool = None
@@ -326,12 +411,20 @@ async def _async_main(ns: argparse.Namespace) -> int:
     print_summary(agg)
     _write_html(out_path)
 
+    exit_code = 0
     if ns.persist:
         _persist_to_dynamodb(out_path)
+        if not ns.no_compare:
+            exit_code = _compare_run(
+                out_path,
+                n=ns.baseline_n,
+                delta=ns.regression_delta,
+                min_baseline_n=ns.min_baseline_n,
+            )
 
     if tunnel_pool:
         tunnel_pool.stop_all()
-    return 0
+    return exit_code
 
 
 
@@ -488,6 +581,22 @@ def main() -> int:
                         "localhost --base-url. Required because that combination usually "
                         "means a developer is testing on their laptop and would otherwise "
                         "pollute the dev-illum validator tables.")
+    p.add_argument("--no-compare", dest="no_compare", action="store_true",
+                   help="Skip regression comparison after --persist. Useful when there "
+                        "is no baseline yet or when comparison is not desired.")
+    p.add_argument("--baseline-n", dest="baseline_n", type=int, default=DEFAULT_N,
+                   help=f"Number of prior runs to use as the baseline window "
+                        f"(default: {DEFAULT_N}).")
+    p.add_argument("--regression-delta", dest="regression_delta", type=float,
+                   default=DEFAULT_DELTA,
+                   help=f"Score drop threshold for flagging a regression "
+                        f"(default: {DEFAULT_DELTA}).")
+    p.add_argument("--min-baseline-n", dest="min_baseline_n", type=int,
+                   default=DEFAULT_MIN_BASELINE_N,
+                   help=f"Minimum number of prior occurrences a question must have before "
+                        f"regressions are flagged for it (default: {DEFAULT_MIN_BASELINE_N}). "
+                        "Questions with fewer prior runs are compared but never flagged, "
+                        "preventing noise from newly-added or rarely-run questions.")
 
     p.add_argument("--workers", type=int, default=1,
                    help="Number of parallel workers for both collection and scoring "

@@ -68,6 +68,13 @@ def _collapsible(summary: str, content: str, open: bool = False) -> str:
 
 # ── section builders ──────────────────────────────────────────────────────────
 
+def _overall_status_badge(status: str | None) -> str:
+    if not status:
+        return ""
+    cls = "reg-pass" if status == "PASSED" else "reg-regression"
+    return f'<span class="overall-badge {cls}">{_esc(status)}</span>'
+
+
 def _header_section(run: dict) -> str:
     ts = run.get("run_timestamp", "")[:19].replace("T", " ")
     agg = run.get("aggregated_scores") or {}
@@ -78,12 +85,13 @@ def _header_section(run: dict) -> str:
     mean = ar.get("mean")
     pass_rate = ar.get("pass_rate")
     latency = agg.get("avg_duration_ms")
+    overall_status = run.get("overall_status")
 
     stat = lambda label, value: f'<div class="stat"><div class="stat-val">{value}</div><div class="stat-lbl">{label}</div></div>'
 
     return f"""
 <div class="header">
-  <h1>Analytics Agent Validator</h1>
+  <h1>Analytics Agent Validator {_overall_status_badge(overall_status)}</h1>
   <div class="meta">
     Run <strong>{_esc(run.get("run_id",""))}</strong> &nbsp;·&nbsp;
     {_esc(ts)} &nbsp;·&nbsp;
@@ -129,6 +137,116 @@ def _metrics_section(agg: dict) -> str:
     <thead><tr><th>Metric</th><th>n</th><th>Mean Score</th><th>Pass Rate</th></tr></thead>
     <tbody>{rows}</tbody>
   </table>
+</section>"""
+
+
+def _performance_table(performance: dict) -> str:
+    """Render the run-level performance comparison — no pass/fail, trend only."""
+    if not performance:
+        return ""
+    rows = ""
+    for entry in performance.values():
+        # Use pre-computed delta/delta_pct from comparator — no recomputation.
+        if "delta_pct" in entry:
+            delta_val = entry["delta_pct"]
+            delta_str = f"{delta_val:+.1f}%"
+        else:
+            delta_val = entry.get("delta", 0)
+            delta_str = f"{delta_val:+.2f}"
+        arrow = "▲" if delta_val > 0 else ("▼" if delta_val < 0 else "—")
+        # Higher latency/tokens/calls = worse → amber; lower = green.
+        cls = "amber" if delta_val > 0 else "green"
+        baseline_fmt = f"{baseline:,.1f}" if baseline >= 100 else f"{baseline:.2f}"
+        current_fmt = f"{current:,.1f}" if current >= 100 else f"{current:.2f}"
+        rows += (
+            f"<tr>"
+            f"<td>{_esc(entry.get('label',''))}</td>"
+            f"<td>{baseline_fmt}</td>"
+            f"<td>{current_fmt}</td>"
+            f'<td class="{cls}">{arrow} {delta_str}</td>'
+            f"</tr>"
+        )
+    return f"""
+<h3 class="reg-heading">Performance vs Baseline</h3>
+<table>
+  <thead><tr>
+    <th>Metric</th><th>Baseline mean</th><th>This run</th><th>Change</th>
+  </tr></thead>
+  <tbody>{rows}</tbody>
+</table>"""
+
+
+def _regression_section(run: dict) -> str:
+    """Render the comparison / regression block from the run JSON, if present."""
+    comparison = run.get("comparison")
+    if not comparison:
+        return ""
+
+    overall_status = comparison.get("overall_status", "PASSED")
+    baseline_runs = comparison.get("baseline_runs", 0)
+    regressions = comparison.get("regressions") or []
+    improvements = comparison.get("improvements") or []
+
+    if baseline_runs == 0:
+        return ""  # first run — no baseline yet, nothing to show
+
+    status_cls = "reg-regression" if overall_status == "REGRESSION" else "reg-pass"
+    status_html = f'<span class="overall-badge {status_cls}">{_esc(overall_status)}</span>'
+    q_with = comparison.get("questions_with_baseline")
+    q_without = comparison.get("questions_without_baseline")
+    coverage_html = ""
+    if q_with is not None and q_without is not None:
+        coverage_html = (
+            f" &nbsp;·&nbsp; "
+            f'<span class="reg-coverage">{q_with} question(s) compared</span>'
+            + (
+                f', <span class="reg-no-baseline">{q_without} without enough history</span>'
+                if q_without else ""
+            )
+        )
+    meta = f'<div class="reg-meta">Baseline: {baseline_runs} run(s) &nbsp;·&nbsp; {status_html}{coverage_html}</div>'
+
+    def _findings_table(findings: list[dict], heading: str, delta_cls_fn) -> str:
+        if not findings:
+            return ""
+        rows = ""
+        for f in findings:
+            delta = f.get("delta", 0)
+            dcls = delta_cls_fn(delta)
+            rows += (
+                f'<tr>'
+                f'<td><code>q{f["question_id"]}</code></td>'
+                f'<td>{_esc(f.get("metric",""))}</td>'
+                f'<td>{_score(f.get("baseline_mean"))}</td>'
+                f'<td>{_score(f.get("current_score"))}</td>'
+                f'<td class="{dcls}">{delta:+.3f}</td>'
+                f'</tr>'
+            )
+        return f"""
+<h3 class="reg-heading">{heading} ({len(findings)})</h3>
+<table>
+  <thead><tr><th>Question</th><th>Metric</th><th>Baseline mean</th><th>Current score</th><th>Delta</th></tr></thead>
+  <tbody>{rows}</tbody>
+</table>"""
+
+    reg_table = _findings_table(regressions, "Regressions", lambda d: "red")
+    imp_table = _findings_table(improvements, "Improvements", lambda d: "green")
+
+    if not reg_table and not imp_table:
+        no_change = '<p class="reg-ok">No regressions or improvements vs baseline.</p>'
+    else:
+        no_change = ""
+
+    perf_table = _performance_table(comparison.get("performance") or {})
+
+    return f"""
+<section class="reg-section">
+  <h2>Regression Report</h2>
+  {meta}
+  {reg_table}
+  {imp_table}
+  {no_change}
+  {perf_table}
 </section>"""
 
 
@@ -180,13 +298,17 @@ def _question_card(r: dict) -> str:
     ar_score = ar.get("score")
     ar_passed = ar.get("passed")
     ic_score = ic.get("score") if ic else None
+    ic_passed = ic.get("passed") if ic else None
     sql_mean = (
         sum(pr["sql_score"] for pr in sql_scores) / len(sql_scores)
         if sql_scores else None
     )
 
+    regression_flag = r.get("regression_flag", False)
     card_cls = "card"
-    if ar_passed is False:
+    if regression_flag:
+        card_cls += " card-regression"
+    elif ar_passed is False:
         card_cls += " card-fail"
     elif ar_passed is True:
         card_cls += " card-pass"
@@ -279,12 +401,21 @@ def _question_card(r: dict) -> str:
         if ar_reason else ""
     )
 
-    # ── ic reason (collapsible) ───────────────────────────────────────────────
+    # ── ic reason (collapsible, score in summary like SQL) ────────────────────
     ic_reason = ic.get("reason") or "" if ic else ""
-    ic_section = (
-        _collapsible("Interpretation Judge Reason", f'<div class="judge-inner">{_esc(ic_reason)}</div>')
-        if ic_reason else ""
-    )
+    if ic_reason:
+        ic_score_tag = (
+            f'<span class="trace-sql-score">{_score(ic_score)}</span> '
+            if ic_score is not None else ""
+        )
+        ic_badge = _pass_badge(ic_passed) if ic_score is not None else ""
+        ic_section = _collapsible(
+            f"Interpretation Coverage &nbsp; {ic_score_tag}{ic_badge}",
+            f'<div class="judge-inner">{_esc(ic_reason)}</div>',
+            open=ic_passed is False,
+        )
+    else:
+        ic_section = ""
 
     # ── tool compliance badge ─────────────────────────────────────────────────
     tc_html = ""
@@ -301,6 +432,7 @@ def _question_card(r: dict) -> str:
                 detail += f" extra: {', '.join(extra)}"
             tc_html = f'<span class="tc-fail">✗ tools{detail}</span>'
 
+    regression_badge = '<span class="badge regression">REGRESSION</span>' if regression_flag else ""
     error_html = f'<div class="error-box">Error: {_esc(str(error))}</div>' if error else ""
 
     # ── non-SQL tool results (RCA, AO) ────────────────────────────────────────
@@ -325,6 +457,7 @@ def _question_card(r: dict) -> str:
     <span class="question">{question}</span>
     <span class="duration">{_ms(duration)}</span>
     {_pass_badge(ar_passed)}
+    {regression_badge}
     {tc_html}
   </div>
   <div class="card-scores">
@@ -555,9 +688,15 @@ tr:last-child td { border-bottom: none; }
 
 .badge { display: inline-block; padding: 1px 7px; border-radius: 10px;
          font-size: 10px; font-weight: 700; letter-spacing: .4px; }
-.badge.pass { background: #dcfce7; color: #16a34a; }
-.badge.fail { background: #fee2e2; color: #dc2626; }
-.badge.gray { background: #f3f4f6; color: #9ca3af; }
+.badge.pass       { background: #dcfce7; color: #16a34a; }
+.badge.fail       { background: #fee2e2; color: #dc2626; }
+.badge.gray       { background: #f3f4f6; color: #9ca3af; }
+.badge.regression { background: #fef3c7; color: #92400e; }
+
+.overall-badge { display: inline-block; padding: 2px 10px; border-radius: 12px;
+                 font-size: 12px; font-weight: 700; letter-spacing: .5px; vertical-align: middle; }
+.overall-badge.reg-pass       { background: #dcfce7; color: #15803d; }
+.overall-badge.reg-regression { background: #fef3c7; color: #92400e; }
 
 .flow-tag { display: inline-block; padding: 1px 7px; border-radius: 10px;
             background: #eff6ff; color: #1d4ed8; font-size: 11px; font-weight: 600; }
@@ -565,8 +704,16 @@ tr:last-child td { border-bottom: none; }
 
 .card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 14px;
         margin-bottom: 12px; }
-.card-pass { border-left: 4px solid #22c55e; }
-.card-fail { border-left: 4px solid #ef4444; }
+.card-pass       { border-left: 4px solid #22c55e; }
+.card-fail       { border-left: 4px solid #ef4444; }
+.card-regression { border-left: 4px solid #f59e0b; background: #fffbeb; }
+
+.reg-section { border: 1px solid #fde68a; }
+.reg-meta { font-size: 12px; color: #6b7280; margin-bottom: 14px; }
+.reg-heading { font-size: 13px; font-weight: 600; color: #374151; margin: 14px 0 8px; }
+.reg-ok { font-size: 13px; color: #6b7280; font-style: italic; margin-top: 8px; }
+.reg-coverage { color: #374151; }
+.reg-no-baseline { color: #b45309; }
 
 .card-header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
 .qid { font-weight: 700; color: #555; min-width: 36px; font-size: 12px; }
@@ -647,6 +794,7 @@ def generate_html_report(run_path: Path) -> Path:
         _header_section(run)
         + _metrics_section(agg)
         + _flow_section(agg)
+        + _regression_section(run)
         + _questions_section(results)
         + _chains_section(chain_results)
     )

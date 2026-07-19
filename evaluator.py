@@ -143,6 +143,7 @@ def _eval_record(record: dict, metrics: dict, schema_cache: dict[str, str]) -> d
     )
 
     # interpretation_coverage — use interpretation titles from od/fdl result records
+    _DATA_TOOLS = {"get_fdl_data", "get_od_data", "get_athena_data"}
     if flow in INTERPRETATION_FLOWS:
         interpretations = [r.get("interpretation", "") for r in od_fdl_results if r.get("interpretation")]
         if interpretations:
@@ -156,12 +157,18 @@ def _eval_record(record: dict, metrics: dict, schema_cache: dict[str, str]) -> d
             )
             eval_out["interpretation_coverage"] = {"score": score, "passed": passed, "reason": reason}
         elif not od_fdl_results:
-            # Agent made no tool calls for a data-flow question — that is itself a failure.
-            eval_out["interpretation_coverage"] = {
-                "score": 0.0,
-                "passed": False,
-                "reason": "Agent made no data tool calls for a data-flow question.",
-            }
+            tools_called = set(record.get("tools_called") or [])
+            if tools_called & _DATA_TOOLS:
+                # Agent called a data tool but the service returned an empty result set
+                # (0 rows) — no interpretation to evaluate, skip rather than penalise.
+                pass
+            else:
+                # Agent truly made no data tool calls for a data-flow question.
+                eval_out["interpretation_coverage"] = {
+                    "score": 0.0,
+                    "passed": False,
+                    "reason": "Agent made no data tool calls for a data-flow question.",
+                }
 
     # sql_correctness — validate that the agent referenced correct columns and tables.
     # SQL comes from od_fdl_results[*].sql, embedded by _merge_tool_result via title matching.

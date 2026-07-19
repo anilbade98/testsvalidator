@@ -126,6 +126,18 @@ def _base_args(out_path: Path) -> list[str]:
         args.append("--skip-eval")
     if st.session_state.get("use_persist") and not st.session_state.get("skip_eval"):
         args.append("--persist")
+        if st.session_state.get("no_compare"):
+            args.append("--no-compare")
+        else:
+            baseline_n = int(st.session_state.get("baseline_n", 10))
+            reg_delta = float(st.session_state.get("regression_delta", 0.1))
+            if baseline_n != 10:
+                args += ["--baseline-n", str(baseline_n)]
+            if abs(reg_delta - 0.1) > 1e-9:
+                args += ["--regression-delta", str(reg_delta)]
+            min_b_n = int(st.session_state.get("min_baseline_n", 2))
+            if min_b_n != 2:
+                args += ["--min-baseline-n", str(min_b_n)]
     _workers = int(st.session_state.get("workers", 1))
     if _workers > 1:
         args += ["--workers", str(_workers)]
@@ -229,6 +241,18 @@ def _push_status(run_path: Path) -> tuple[str, str]:
 
     if failing:
         return "error", f"Quality issues — {', '.join(failing)} below {PASS_THRESHOLD*100:.0f}% threshold."
+
+    # Surface regression status from comparison (checked after quality so errors take priority).
+    overall_status = run.get("overall_status")
+    if overall_status == "REGRESSION":
+        comparison = run.get("comparison") or {}
+        n_reg = len(comparison.get("regressions") or [])
+        baseline_runs = comparison.get("baseline_runs", 0)
+        return "warning", (
+            f"REGRESSION — {n_reg} regression(s) vs {baseline_runs}-run baseline. "
+            f"Quality: {pass_rate*100:.0f}% passed{mean_str}."
+        )
+
     if pass_rate >= 0.8:
         return "success", f"Quality looks good — {pass_rate*100:.0f}% passed{mean_str}"
     elif pass_rate >= 0.6:
@@ -295,6 +319,7 @@ for _k, _v in [
     ("service_mode", "local"), ("env_name", "staging"),
     ("base_url", "http://localhost:80"),
     ("skip_eval", False), ("use_persist", False), ("workers", 1), ("reference_date", ""),
+    ("no_compare", False), ("baseline_n", 10), ("regression_delta", 0.1), ("min_baseline_n", 2),
     ("_resolved_token", ""), ("_resolved_tenant", ""),
     ("_login_email", ""), ("_login_password", ""), ("_login_env", ""),
 ]:
@@ -391,6 +416,29 @@ with st.sidebar:
         help="Write results to DynamoDB after scoring.",
         disabled=st.session_state.skip_eval,
     )
+    if st.session_state.use_persist and not st.session_state.skip_eval:
+        st.session_state.no_compare = st.checkbox(
+            "Skip comparison", value=st.session_state.no_compare,
+            help="Do not compare against prior runs after persisting.",
+        )
+        if not st.session_state.no_compare:
+            cmp_cols = st.columns(3)
+            st.session_state.baseline_n = cmp_cols[0].number_input(
+                "Baseline runs (N)", min_value=1, max_value=50,
+                value=st.session_state.baseline_n,
+                help="Number of prior runs to average as the baseline.",
+            )
+            st.session_state.regression_delta = cmp_cols[1].number_input(
+                "Regression delta", min_value=0.01, max_value=1.0,
+                value=st.session_state.regression_delta, step=0.01, format="%.2f",
+                help="Score drop threshold to flag a regression.",
+            )
+            st.session_state.min_baseline_n = cmp_cols[2].number_input(
+                "Min baseline runs", min_value=1, max_value=20,
+                value=st.session_state.min_baseline_n,
+                help="Min prior occurrences a question needs before regressions are flagged. "
+                     "Prevents noise from newly-added or rarely-run questions.",
+            )
     st.session_state.workers = st.slider(
         "Workers", min_value=1, max_value=10,
         value=st.session_state.workers,
@@ -665,6 +713,7 @@ with tab_history:
                 data = json.loads(f.read_text(encoding="utf-8"))
                 agg = data.get("aggregated_scores") or {}
                 ar = agg.get("agent_response") or {}
+                overall_status = data.get("overall_status") or ""
                 history_rows.append({
                     "File": f.name,
                     "Timestamp": data.get("run_timestamp", "")[:16].replace("T", " "),
@@ -672,7 +721,8 @@ with tab_history:
                     "Agent mean": f"{ar['mean']:.3f}" if ar.get("mean") is not None else "-",
                     "Pass rate": f"{ar['pass_rate']*100:.0f}%" if ar.get("pass_rate") is not None else "-",
                     "Errors": str(agg.get("errors", 0)),
-                    "Status": "PASS" if (ar.get("pass_rate") or 0) >= 0.7 else ("FAIL" if ar.get("pass_rate") is not None else "-"),
+                    "Quality": "PASS" if (ar.get("pass_rate") or 0) >= 0.7 else ("FAIL" if ar.get("pass_rate") is not None else "-"),
+                    "Regression": overall_status if overall_status else "-",
                 })
             except Exception:
                 pass
@@ -733,11 +783,34 @@ with tab_history:
 
             if btn2.button("Persist to DB", width="stretch",
                            disabled=bool(st.session_state.proc),
-                           help="Write scored results to DynamoDB (requires scores to exist)."):
+                           help="Write scored results to DynamoDB and run regression comparison."):
                 try:
                     from tests.validator.persistence import persist_run_file
                     persist_run_file(selected_file)
-                    st.success(f"Persisted {selected_file.name} to DynamoDB.")
+                    if not st.session_state.get("no_compare"):
+                        try:
+                            from tests.validator.comparator import compare_and_persist
+                            comparison = compare_and_persist(
+                                selected_file,
+                                n=int(st.session_state.get("baseline_n", 10)),
+                                delta=float(st.session_state.get("regression_delta", 0.1)),
+                                min_baseline_n=int(st.session_state.get("min_baseline_n", 2)),
+                            )
+                            status = comparison.get("overall_status", "PASSED")
+                            n_reg = len(comparison.get("regressions") or [])
+                            if status == "REGRESSION":
+                                st.warning(
+                                    f"Persisted {selected_file.name}. "
+                                    f"Comparison: REGRESSION — {n_reg} regression(s) vs baseline."
+                                )
+                            else:
+                                st.success(
+                                    f"Persisted {selected_file.name}. Comparison: {status}."
+                                )
+                        except Exception as cmp_exc:
+                            st.warning(f"Persisted but comparison failed: {cmp_exc}")
+                    else:
+                        st.success(f"Persisted {selected_file.name} to DynamoDB.")
                 except Exception as exc:
                     st.error(f"Persist failed: {exc}")
 

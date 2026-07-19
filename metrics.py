@@ -33,8 +33,11 @@ _SCHEMA_DOCS_DIRS = {
     "athena": Path(__file__).resolve().parents[2] / "app" / "schema-docs" / "athena",
 }
 
-SQL_FLOWS = {"fdl", "od", "ao", "rca", "advisory", "mixed", "refresh"}
-INTERPRETATION_FLOWS = {"fdl", "od", "ao", "rca", "advisory", "mixed"}
+# ao and rca route through sub-agents, never through SQL tools — they produce no
+# od_fdl_results. Excluded from both sets so sql_correctness and
+# interpretation_coverage are never scored for these flows.
+SQL_FLOWS = {"fdl", "od", "advisory", "mixed", "refresh"}
+INTERPRETATION_FLOWS = {"fdl", "od", "advisory", "mixed"}
 
 
 # ── SQL conventions extracted from agent prompts ──────────────────────────────
