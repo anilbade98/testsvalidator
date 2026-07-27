@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
-import math
 from pathlib import Path
+
+from tests.validator.records import chain_records, question_records
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -81,7 +82,6 @@ def _header_section(run: dict) -> str:
     ar = agg.get("agent_response") or {}
     total = agg.get("total", 0)
     errors = agg.get("errors", 0)
-    passed = ar.get("passed", 0)
     mean = ar.get("mean")
     pass_rate = ar.get("pass_rate")
     latency = agg.get("avg_duration_ms")
@@ -154,8 +154,14 @@ def _performance_table(performance: dict) -> str:
             delta_val = entry.get("delta", 0)
             delta_str = f"{delta_val:+.2f}"
         arrow = "▲" if delta_val > 0 else ("▼" if delta_val < 0 else "—")
-        # Higher latency/tokens/calls = worse → amber; lower = green.
-        cls = "amber" if delta_val > 0 else "green"
+        # A flagged perf regression is red; other increases amber; decreases green.
+        if entry.get("regressed"):
+            cls = "red"
+            delta_str += " ⚠ regression"
+        else:
+            cls = "amber" if delta_val > 0 else "green"
+        baseline = entry.get("baseline_mean", 0) or 0
+        current = entry.get("current", 0) or 0
         baseline_fmt = f"{baseline:,.1f}" if baseline >= 100 else f"{baseline:.2f}"
         current_fmt = f"{current:,.1f}" if current >= 100 else f"{current:.2f}"
         rows += (
@@ -229,10 +235,68 @@ def _regression_section(run: dict) -> str:
   <tbody>{rows}</tbody>
 </table>"""
 
-    reg_table = _findings_table(regressions, "Regressions", lambda d: "red")
-    imp_table = _findings_table(improvements, "Improvements", lambda d: "green")
+    # Why the verdict fired (aggregate σ-band / trend / floor / breadth / targeted).
+    kinds = comparison.get("regression_kinds") or []
+    kinds_html = ""
+    if kinds:
+        _labels = {
+            "sigma": "aggregate drop", "trend": "downward trend",
+            "floor": "below pass-rate floor", "breadth": "broad per-question drop",
+            "targeted": "targeted question break", "flow": "per-flow drop",
+            "perf_latency": "latency regression", "perf_tokens": "token-cost regression",
+        }
+        pretty = ", ".join(_labels.get(k, k) for k in kinds)
+        kinds_html = f'<div class="reg-meta">Signals: <strong>{_esc(pretty)}</strong></div>'
 
-    if not reg_table and not imp_table:
+    # Aggregate metric comparison — the primary, low-variance signal.
+    metrics = comparison.get("metrics") or {}
+    agg_rows = ""
+    for name, d in metrics.items():
+        agg_rows += (
+            f'<tr><td>{_esc(name)}</td>'
+            f'<td>{_score(d.get("baseline_mean"))}</td>'
+            f'<td>±{d.get("sigma", 0):.3f}</td>'
+            f'<td>{_score(d.get("current_mean"))}</td>'
+            f'<td>{d.get("drop", 0):+.3f}</td>'
+            f'<td>{_esc(d.get("status", ""))}</td></tr>'
+        )
+    agg_table = ""
+    if agg_rows:
+        agg_table = f"""
+<h3 class="reg-heading">Aggregate vs baseline (drop = baseline − this run)</h3>
+<table>
+  <thead><tr><th>Metric</th><th>Baseline mean</th><th>σ</th><th>This run</th><th>Drop</th><th>Status</th></tr></thead>
+  <tbody>{agg_rows}</tbody>
+</table>"""
+
+    # Per-flow agent_response comparison — highlights a flow-localised regression.
+    flows = comparison.get("flows") or {}
+    flow_rows = ""
+    for fl, d in sorted(flows.items()):
+        cls = "red" if d.get("status") == "regression" else ""
+        flow_rows += (
+            f'<tr><td>{_esc(fl)}</td>'
+            f'<td>{_score(d.get("baseline_mean"))}</td>'
+            f'<td>±{d.get("sigma", 0):.3f}</td>'
+            f'<td>{_score(d.get("current_mean"))}</td>'
+            f'<td>{d.get("drop", 0):+.3f}</td>'
+            f'<td class="{cls}">{_esc(d.get("status", ""))}</td></tr>'
+        )
+    flow_table = ""
+    if flow_rows:
+        flow_table = f"""
+<h3 class="reg-heading">Per-flow agent_response vs baseline</h3>
+<table>
+  <thead><tr><th>Flow</th><th>Baseline mean</th><th>σ</th><th>This run</th><th>Drop</th><th>Status</th></tr></thead>
+  <tbody>{flow_rows}</tbody>
+</table>"""
+
+    reg_table = _findings_table(
+        regressions, "Per-question drops (informational)", lambda d: "red")
+    imp_table = _findings_table(
+        improvements, "Per-question gains (informational)", lambda d: "green")
+
+    if not agg_table and not reg_table and not imp_table:
         no_change = '<p class="reg-ok">No regressions or improvements vs baseline.</p>'
     else:
         no_change = ""
@@ -243,6 +307,9 @@ def _regression_section(run: dict) -> str:
 <section class="reg-section">
   <h2>Regression Report</h2>
   {meta}
+  {kinds_html}
+  {agg_table}
+  {flow_table}
   {reg_table}
   {imp_table}
   {no_change}
@@ -611,7 +678,6 @@ def _chain_card(chain: dict) -> str:
     cr_mean = ce.get("context_retention_mean")
     cr_pass_rate = ce.get("context_retention_pass_rate")
 
-    overall_passed = tr_pass_rate is not None and tr_pass_rate >= 0.7
     overall_passed_val = True if (tr_pass_rate is not None and tr_pass_rate >= 0.7) else (False if tr_pass_rate is not None else None)
 
     turns_html = "".join(_chain_turn_card(t) for t in turns)
@@ -636,7 +702,7 @@ def _chain_card(chain: dict) -> str:
 
 
 def _chains_section(results: list) -> str:
-    chains = [r for r in results if "chain_id" in r]
+    chains = chain_records(results)
     if not chains:
         return ""
     cards = "".join(_chain_card(c) for c in chains)
@@ -777,18 +843,16 @@ details code { background: #1e293b; color: #94a3b8; padding: 6px 10px;
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
-def generate_html_report(run_path: Path) -> Path:
-    """Generate an HTML report from a validator run JSON file.
+def render_html_report(run: dict) -> str:
+    """Render a validator run dict into a self-contained HTML report string.
 
-    Returns the path to the generated HTML file.
+    Works for both local run JSON and runs reconstructed from DynamoDB — the
+    input is the same run-dict shape either way.
     """
-    run = json.loads(run_path.read_text())
     agg = run.get("aggregated_scores") or {}
-    # Only render single-turn question cards; chain records don't have question_id.
-    results = [r for r in (run.get("results") or []) if "question_id" in r]
-
-    all_results = run.get("results") or []
-    chain_results = [r for r in all_results if "chain_id" in r]
+    # Only render single-turn question cards; chain records are shown separately.
+    results = question_records(run.get("results"))
+    chain_results = chain_records(run.get("results"))
 
     body = (
         _header_section(run)
@@ -799,7 +863,7 @@ def generate_html_report(run_path: Path) -> Path:
         + _chains_section(chain_results)
     )
 
-    html = f"""<!DOCTYPE html>
+    return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -814,6 +878,13 @@ def generate_html_report(run_path: Path) -> Path:
 </body>
 </html>"""
 
+
+def generate_html_report(run_path: Path) -> Path:
+    """Generate an HTML report file from a validator run JSON file.
+
+    Returns the path to the generated HTML file (written next to the JSON).
+    """
+    run = json.loads(run_path.read_text())
     out_path = run_path.with_suffix(".html")
-    out_path.write_text(html, encoding="utf-8")
+    out_path.write_text(render_html_report(run), encoding="utf-8")
     return out_path

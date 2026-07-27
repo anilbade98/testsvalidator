@@ -29,9 +29,19 @@ Usage:
 from __future__ import annotations
 
 import os
+import sys
 
 os.environ.setdefault("DEEPEVAL_TELEMETRY_OPT_OUT", "YES")
 os.environ.setdefault("DEEPEVAL_UPDATE_WARNING_OPT_IN", "NO")
+
+# Windows consoles default to cp1252, which can't encode the box-drawing
+# characters the summary printers use. Force UTF-8 (replace on failure) so a
+# cosmetic print can never crash a collection/eval/persist run.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 import argparse  # noqa: E402
 import asyncio  # noqa: E402
@@ -39,7 +49,8 @@ from datetime import datetime  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 from tests.validator.aggregator import print_summary, write_aggregated  # noqa: E402
-from tests.validator.comparator import DEFAULT_DELTA, DEFAULT_MIN_BASELINE_N, DEFAULT_N  # noqa: E402
+from tests.validator.comparator import DEFAULT_DELTA, DEFAULT_N  # noqa: E402
+from tests.validator.records import has_chains, is_question_record  # noqa: E402
 from tests.validator.runner import (  # noqa: E402
     VALID_FLOWS,
     load_questions,
@@ -61,8 +72,10 @@ def _persist_to_dynamodb(run_path: Path) -> None:
     so a transient AWS hiccup doesn't lose the local JSON result the user already has."""
     try:
         from tests.validator.persistence import persist_run_file
-        persist_run_file(run_path)
-        print(f"Persisted to DynamoDB: {run_path.name}")
+        if persist_run_file(run_path):
+            print(f"Persisted to DynamoDB: {run_path.name}")
+        else:
+            print(f"Not persisted (run incomplete/FAILED — excluded from baseline): {run_path.name}")
     except Exception as exc:
         print(f"WARNING: DynamoDB persist failed: {type(exc).__name__}: {exc}")
         print(f"   Local result file is intact at {run_path}.")
@@ -90,7 +103,8 @@ def _read_run_meta_base_url(run_path: Path) -> str | None:
     try:
         import json
         with run_path.open("r", encoding="utf-8") as fh:
-            return (json.load(fh).get("meta") or {}).get("base_url")
+            # Run metadata is stored at the top level (see runner._save), not under "meta".
+            return json.load(fh).get("base_url")
     except Exception:
         return None
 
@@ -100,22 +114,263 @@ def _compare_run(
     *,
     n: int = DEFAULT_N,
     delta: float = DEFAULT_DELTA,
-    min_baseline_n: int = DEFAULT_MIN_BASELINE_N,
+    confirm: dict | None = None,
+    persist: bool = True,
 ) -> int:
-    """Run regression comparison after a persist. Returns 1 if regressions detected, else 0.
+    """Compare against the baseline, optionally re-run to confirm, then persist if PASSED.
 
-    Best-effort: on any failure, logs a warning and returns 0 so a transient AWS
-    error doesn't fail the run when the local JSON result is intact.
+    Returns 1 if a (confirmed) regression is detected, else 0. Best-effort: on any
+    failure, logs a warning and returns 0 so a transient AWS error doesn't fail the
+    run when the local JSON result is intact.
+
+    confirm: when provided (full-run path with a live service), a dict of
+      {auth, base_url, env, tunnel_pool, reference_date, k} used to re-run the
+      targeted-flagged questions and confirm only regressions that reproduce.
     """
     try:
-        from tests.validator.comparator import compare_and_persist
-        comparison = compare_and_persist(run_path, n=n, delta=delta, min_baseline_n=min_baseline_n)
+        from tests.validator.comparator import compare_run, persist_if_passed
+        comparison = compare_run(run_path, n=n, delta=delta)
+        if (confirm and confirm.get("k", 0) > 0
+                and comparison.get("overall_status") == "REGRESSION"
+                and "targeted" in (comparison.get("regression_kinds") or [])):
+            comparison = _confirm_targeted_regressions(
+                run_path, comparison, n=n, delta=delta, **confirm)
         _print_regression_summary(comparison)
+        if persist:
+            persist_if_passed(run_path, comparison)
         return 1 if comparison.get("overall_status") == "REGRESSION" else 0
     except Exception as exc:
         print(f"WARNING: Comparison failed: {type(exc).__name__}: {exc}")
         print(f"   Local result file is intact at {run_path}.")
         return 0
+
+
+def _metric_score(eval_block: dict, name: str):
+    """Return the scalar score for a metric from an eval block, or None.
+
+    sql_correctness has no single field — it's the mean of per-trace sql_score.
+    """
+    if name == "sql_correctness":
+        pts = [pr.get("sql_score") for pr in (eval_block.get("per_trace") or [])
+               if pr.get("sql_score") is not None]
+        return (sum(pts) / len(pts)) if pts else None
+    entry = eval_block.get(name) or {}
+    return entry.get("score")
+
+
+def _heal_flagged_records(results: list, flagged_by_qid: dict, samples_by_qid: dict,
+                          hard_delta: float) -> tuple[list, list]:
+    """Replace each recovered question's stored record with a representative re-run.
+
+    A question is 'recovered' when, for EVERY flagged metric, the median score across
+    its re-runs clears the hard-drop threshold (baseline_mean - hard_delta). Recovered
+    questions are healed in place (so a transient failure doesn't taint the baseline);
+    questions that stay bad keep their original record and remain flagged.
+
+    Returns (healed_qids, still_bad_qids). Mutates `results` in place.
+    """
+    from statistics import median as _median
+
+    by_qid = {r.get("question_id"): i for i, r in enumerate(results)
+              if is_question_record(r)}
+    healed, still_bad = [], []
+    for qid, metrics in flagged_by_qid.items():
+        samples = samples_by_qid.get(qid) or []
+        recovered = bool(samples)
+        for metric, baseline_mean in metrics.items():
+            scores = [s for s in (_metric_score(smp.get("eval") or {}, metric)
+                                  for smp in samples) if s is not None]
+            if not scores or _median(scores) <= baseline_mean - hard_delta:
+                recovered = False
+                break
+        if not recovered:
+            still_bad.append(qid)
+            continue
+        # Heal with the median-quality sample (by agent_response, else first flagged metric).
+        primary = "agent_response" if "agent_response" in metrics else next(iter(metrics))
+        ordered = sorted(samples, key=lambda s: _metric_score(s.get("eval") or {}, primary) or 0.0)
+        rep = ordered[len(ordered) // 2]
+        if qid in by_qid:
+            rep["run_id"] = results[by_qid[qid]].get("run_id")  # keep run identity
+            results[by_qid[qid]] = rep
+            healed.append(qid)
+        else:
+            still_bad.append(qid)
+    return healed, still_bad
+
+
+def _confirm_targeted_regressions(
+    run_path: Path, comparison: dict, *,
+    auth: dict, base_url: str, env: str | None, tunnel_pool,
+    reference_date: str | None, k: int,
+    n: int = DEFAULT_N, delta: float = DEFAULT_DELTA,
+) -> dict:
+    """Re-run each targeted-flagged question k times, HEAL the ones that recover, then
+    re-aggregate + re-compare so the verdict reflects the healed data.
+
+    Recovered questions (transient failures / one-off bad answers) get their stored
+    record replaced by a representative re-run, so a cleared run enters the baseline
+    with good data instead of the transient failure. Questions that reproduce their
+    drop keep their original record and remain a real regression.
+    """
+    import json
+    from collections import defaultdict
+    from tests.validator.comparator import DEFAULT_QUESTION_HARD_DELTA, compare_run
+    from tests.validator.aggregator import write_aggregated
+    from tests.validator.runner import run_one_with_auth_retry, load_questions as _load_q
+    from tests.validator.evaluator import _score_one, load_schema_docs
+
+    targeted = comparison.get("targeted") or []
+    if not targeted:
+        return comparison
+
+    flagged_by_qid: dict = defaultdict(dict)
+    for t in targeted:
+        flagged_by_qid[t["question_id"]][t["metric"]] = t["baseline_mean"]
+
+    qmeta = {q["id"]: q for q in _load_q(QUESTIONS_PATH)}
+    schema_cache = load_schema_docs()
+    flagged_qids = [q for q in flagged_by_qid if qmeta.get(q)]
+    print(f"\n[confirm] Re-running {len(flagged_qids)} flagged question(s) x{k} "
+          "to confirm/heal (a regression is kept only if it reproduces) ...")
+
+    samples_by_qid: dict = {}
+    for pos, qid in enumerate(flagged_qids, 1):
+        meta = qmeta[qid]
+        flow = meta.get("flow", "?")
+        flagged = flagged_by_qid[qid]
+        flagged_desc = ", ".join(f"{m} (baseline {b:.2f})" for m, b in flagged.items())
+        print(f"\n[confirm {pos}/{len(flagged_qids)}] q{qid} [{flow}] — flagged on {flagged_desc}")
+        recs = []
+        for i in range(k):
+            try:
+                rec = run_one_with_auth_retry(
+                    meta, auth, base_url, run_id=f"confirm-{qid}-{i}",
+                    env=env, tunnel_pool=tunnel_pool, reference_date=reference_date)
+                # A re-run that errored (401/timeout/etc.) is NOT a valid sample —
+                # scoring it as a low result would falsely "confirm" a regression.
+                if rec.get("error"):
+                    print(f"  attempt {i + 1}/{k}: run error, skipped — {str(rec['error'])[:80]}")
+                    continue
+                rec["eval"] = _score_one(rec, schema_cache)
+                recs.append(rec)
+                scores = ", ".join(
+                    f"{m}={s:.2f}" for m in flagged
+                    if (s := _metric_score(rec.get("eval") or {}, m)) is not None
+                )
+                print(f"  attempt {i + 1}/{k}: {scores or '(no score)'}")
+            except Exception as e:
+                print(f"  attempt {i + 1}/{k}: FAILED — {type(e).__name__}: {e}")
+        samples_by_qid[qid] = recs
+
+    run = json.loads(Path(run_path).read_text())
+    results = run.get("results") or []
+    healed, still_bad = _heal_flagged_records(
+        results, dict(flagged_by_qid), samples_by_qid, DEFAULT_QUESTION_HARD_DELTA)
+    run["results"] = results
+    Path(run_path).write_text(json.dumps(run, indent=2, default=str))
+    print()
+    for qid in flagged_qids:
+        verdict = "HEALED (noise / transient — recovered on re-run)" if qid in healed \
+            else "CONFIRMED regression (reproduced on re-run)"
+        print(f"[confirm] q{qid}: {verdict}")
+    print(f"[confirm] {len(healed)} healed {healed}; {len(still_bad)} confirmed {still_bad}")
+
+    # Re-aggregate + re-compare on the healed data → the verdict now reflects reality.
+    write_aggregated(Path(run_path))
+    fresh = compare_run(Path(run_path), n=n, delta=delta)
+    fresh["confirmed"] = True
+    fresh["healed_questions"] = healed
+    run = json.loads(Path(run_path).read_text())
+    run["comparison"] = fresh
+    Path(run_path).write_text(json.dumps(run, indent=2, default=str))
+    return fresh
+
+
+def _setup_tunnels(ns):
+    """Set up the SSM tunnel pool when --tunnel is requested. Returns (pool, ok)."""
+    if not ns.tunnel:
+        return None, True
+    if not ns.env:
+        print("--tunnel requires --env (e.g. --env dev)")
+        return None, False
+    from tests.validator.tunnel import TunnelPool, install_sigint_handler
+    tunnel_pool = TunnelPool.for_env(
+        ns.env,
+        fdl_port=ns.tunnel_fdl_port, od_port=ns.tunnel_od_port,
+        ao_port=ns.tunnel_ao_port, rca_port=ns.tunnel_rca_port,
+    )
+    install_sigint_handler(tunnel_pool)
+    print(f"\nSSM tunnel pool ready for env={ns.env!r} "
+          f"(fdl:{ns.tunnel_fdl_port} od:{ns.tunnel_od_port} "
+          f"ao:{ns.tunnel_ao_port} rca:{ns.tunnel_rca_port})")
+    print("  Tunnels will start on demand just before each question that needs them.")
+    print("  AO tunnels direct-to-task (bypasses HTTPS ALB, container speaks HTTP).")
+    return tunnel_pool, True
+
+
+def _run_confirm_file(ns) -> int:
+    """--confirm-file: compare an existing (already collected + scored) run file against
+    the baseline; if it flags a targeted per-question regression, re-run those questions
+    against a live service to confirm/heal, then persist only if it resolves to PASSED.
+
+    Reference date + base URL default to what the run was collected with, so the re-runs
+    stay date-consistent. This is what the UI "Persist to DB" button drives.
+    """
+    import json as _json
+    run_path = Path(ns.confirm_file)
+    if not run_path.exists():
+        print(f"File not found: {run_path}")
+        return 1
+    run = _json.loads(run_path.read_text())
+    env = ns.env or run.get("env")
+    base_url = ns.base_url or run.get("base_url")
+    reference_date = (run.get("reference_date") or ns.reference_date
+                      or os.environ.get("VALIDATOR_REFERENCE_DATE"))
+
+    # A persisted confirm-file run mixes its original records (collected against the
+    # STORED base_url) with any healed re-runs (which hit the EFFECTIVE base_url — a
+    # --base-url override can point elsewhere than the run was collected). Either being
+    # localhost risks polluting the shared baseline with dev-service data, so guard both.
+    if ns.persist:
+        for provenance, url in (("was collected against", run.get("base_url")),
+                                ("would be re-run against", base_url)):
+            if _should_refuse_local_persist(url, ns.allow_local_persist):
+                print(
+                    f"--persist refused: run {provenance} a localhost base_url ({url!r}) "
+                    "and CI=true is not set. Pass --allow-local-persist if you really mean it."
+                )
+                return 1
+
+    if ns.no_compare:
+        if ns.persist:
+            _persist_to_dynamodb(run_path)
+        return 0
+
+    tunnel_pool, ok = _setup_tunnels(ns)
+    if not ok:
+        return 1
+    try:
+        confirm = None
+        if ns.confirm_runs > 0:
+            if not base_url:
+                print("[confirm-file] no base URL available — cannot re-run to confirm; "
+                      "comparison will stand as-is.")
+            else:
+                confirm = {
+                    "auth": resolve_auth(env=env), "base_url": base_url, "env": env,
+                    "tunnel_pool": tunnel_pool, "reference_date": reference_date,
+                    "k": ns.confirm_runs,
+                }
+        exit_code = _compare_run(
+            run_path, n=ns.baseline_n, delta=ns.regression_delta,
+            confirm=confirm, persist=ns.persist,
+        )
+        _write_html(run_path)
+        return exit_code
+    finally:
+        if tunnel_pool:
+            tunnel_pool.stop_all()
 
 
 def _print_regression_summary(comparison: dict) -> None:
@@ -130,9 +385,47 @@ def _print_regression_summary(comparison: dict) -> None:
     print("=" * 60)
     print(f"  Baseline: {baseline_runs} run(s)")
     print(f"  Status:   {status}")
+    if comparison.get("baseline_sufficient") is False and status != "FAILED":
+        print(f"  (regression check skipped — need {comparison.get('required_baseline_runs')} runs)")
+    kinds = comparison.get("regression_kinds") or []
+    if kinds:
+        print(f"  Signals:  {', '.join(kinds)}")
+
+    # Aggregate signal (the primary verdict driver).
+    metrics = comparison.get("metrics") or {}
+    if metrics:
+        print("\n  AGGREGATE vs BASELINE (drop = baseline - this run):")
+        for name, d in metrics.items():
+            print(
+                f"    {name:<26s} baseline={d.get('baseline_mean', 0):.3f}"
+                f" sigma={d.get('sigma', 0):.3f}"
+                f" current={d.get('current_mean', 0):.3f}"
+                f" drop={d.get('drop', 0):+.3f}  [{d.get('status', '')}]"
+            )
+
+    # Per-flow agent_response signal.
+    flows = comparison.get("flows") or {}
+    if flows:
+        print("\n  PER-FLOW agent_response vs BASELINE:")
+        for fl, d in sorted(flows.items()):
+            mark = "  <== REGRESSION" if d.get("status") == "regression" else ""
+            print(
+                f"    {fl:<26s} baseline={d.get('baseline_mean', 0):.3f}"
+                f" sigma={d.get('sigma', 0):.3f}"
+                f" current={d.get('current_mean', 0):.3f}"
+                f" drop={d.get('drop', 0):+.3f}  [{d.get('status', '')}]{mark}"
+            )
+    targeted = comparison.get("targeted") or []
+    if targeted:
+        print(f"\n  TARGETED BREAKS ({len(targeted)}): "
+              + ", ".join(f"q{t['question_id']}/{t['metric']}" for t in targeted))
+    breadth = comparison.get("breadth") or {}
+    if breadth.get("triggered"):
+        print(f"  BREADTH: {breadth.get('regressed_questions')}/{breadth.get('scored_questions')} "
+              "questions regressed (broad drop)")
 
     if regressions:
-        print(f"\n  REGRESSIONS ({len(regressions)}):")
+        print(f"\n  Per-question drops, informational ({len(regressions)}):")
         for r in regressions:
             print(
                 f"    q{r['question_id']:<4d} {r['metric']:<26s}"
@@ -162,11 +455,12 @@ def _print_regression_summary(comparison: dict) -> None:
             else:
                 delta_str = f"{entry['delta']:+.2f}"
             arrow = "▲" if (entry.get("delta_pct") or entry.get("delta") or 0) > 0 else "▼"
+            flag = "  <== REGRESSION" if entry.get("regressed") else ""
             print(
                 f"    {entry['label']:<30s}"
                 f" baseline={entry['baseline_mean']:,.1f}"
                 f" current={entry['current']:,.1f}"
-                f" {arrow} {delta_str}"
+                f" {arrow} {delta_str}{flag}"
             )
     print("=" * 60)
 
@@ -224,12 +518,22 @@ async def _async_main(ns: argparse.Namespace) -> int:
                 return 1
             print(f"Re-scoring {run_path} ...")
 
-        evaluate_run_file(run_path, skip_scored=ns.skip_scored)
+        # Optional subset filters — re-score only matching question records
+        # (e.g. --flow refresh) of a completed report, cheaply, leaving the rest.
+        only_flows = {ns.flow} if ns.flow else None
+        only_ids = set(_parse_ids(ns.ids)) if ns.ids else None
+        if only_flows:
+            print(f"[eval] Restricting re-scoring to flow(s): {sorted(only_flows)}")
+        if only_ids:
+            print(f"[eval] Restricting re-scoring to ids: {sorted(only_ids)}")
+        evaluate_run_file(
+            run_path, skip_scored=ns.skip_scored, workers=ns.workers,
+            only_flows=only_flows, only_ids=only_ids,
+        )
 
         import json as _json2
         run_data = _json2.loads(run_path.read_text())
-        has_chains = any("chain_id" in r for r in run_data.get("results", []))
-        if has_chains:
+        if has_chains(run_data.get("results")):
             print("\nRunning chain eval pass ...")
             from tests.validator.chain_evaluator import evaluate_chain_file
             evaluate_chain_file(run_path, skip_scored=ns.skip_scored, workers=getattr(ns, "workers", 1))
@@ -248,36 +552,27 @@ async def _async_main(ns: argparse.Namespace) -> int:
                     "if you really mean it."
                 )
                 return 1
-            _persist_to_dynamodb(run_path)
-            if not ns.no_compare:
+            # When comparing, _compare_run persists only if the verdict is PASSED
+            # (FAILED/REGRESSION are kept out of the baseline). Only persist
+            # unconditionally when comparison is disabled.
+            if ns.no_compare:
+                _persist_to_dynamodb(run_path)
+            else:
                 exit_code = _compare_run(
                     run_path,
                     n=ns.baseline_n,
                     delta=ns.regression_delta,
-                    min_baseline_n=ns.min_baseline_n,
                 )
         return exit_code
 
+    # ── Confirm/heal + persist an existing run file (against a live service) ──
+    if ns.confirm_file:
+        return _run_confirm_file(ns)
+
     # ── SSM tunnels (optional, local runs only) ───────────────────────────────
-    tunnel_pool = None
-    if ns.tunnel:
-        if not ns.env:
-            print("--tunnel requires --env (e.g. --env dev)")
-            return 1
-        from tests.validator.tunnel import TunnelPool, install_sigint_handler
-        tunnel_pool = TunnelPool.for_env(
-            ns.env,
-            fdl_port=ns.tunnel_fdl_port,
-            od_port=ns.tunnel_od_port,
-            ao_port=ns.tunnel_ao_port,
-            rca_port=ns.tunnel_rca_port,
-        )
-        install_sigint_handler(tunnel_pool)
-        print(f"\nSSM tunnel pool ready for env={ns.env!r} "
-              f"(fdl:{ns.tunnel_fdl_port} od:{ns.tunnel_od_port} "
-              f"ao:{ns.tunnel_ao_port} rca:{ns.tunnel_rca_port})")
-        print("  Tunnels will start on demand just before each question that needs them.")
-        print("  AO tunnels direct-to-task (bypasses HTTPS ALB, container speaks HTTP).")
+    tunnel_pool, ok = _setup_tunnels(ns)
+    if not ok:
+        return 1
 
     # ── Validate flag combinations ───────────────────────────────────────────
     if ns.persist and ns.skip_eval:
@@ -401,8 +696,7 @@ async def _async_main(ns: argparse.Namespace) -> int:
     from tests.validator.evaluator import evaluate_run_file
     evaluate_run_file(out_path, workers=eval_workers)
 
-    has_chains = any("chain_id" in r for r in run.get("results", []))
-    if has_chains:
+    if has_chains(run.get("results")):
         print("\nRunning chain eval pass ...")
         from tests.validator.chain_evaluator import evaluate_chain_file
         evaluate_chain_file(out_path, workers=ns.workers)
@@ -413,13 +707,25 @@ async def _async_main(ns: argparse.Namespace) -> int:
 
     exit_code = 0
     if ns.persist:
-        _persist_to_dynamodb(out_path)
-        if not ns.no_compare:
+        # _compare_run persists only PASSED runs; persist unconditionally only
+        # when comparison is off.
+        if ns.no_compare:
+            _persist_to_dynamodb(out_path)
+        else:
+            # Live service is still up here (tunnels stopped below) → enable
+            # re-run confirmation of targeted regressions.
+            confirm = None
+            if ns.confirm_runs > 0:
+                confirm = {
+                    "auth": auth, "base_url": ns.base_url, "env": ns.env,
+                    "tunnel_pool": tunnel_pool, "reference_date": reference_date,
+                    "k": ns.confirm_runs,
+                }
             exit_code = _compare_run(
                 out_path,
                 n=ns.baseline_n,
                 delta=ns.regression_delta,
-                min_baseline_n=ns.min_baseline_n,
+                confirm=confirm,
             )
 
     if tunnel_pool:
@@ -440,20 +746,9 @@ async def _async_chains(ns: argparse.Namespace) -> int:
         return 1
 
     # ── SSM tunnels ───────────────────────────────────────────────────────────
-    tunnel_pool = None
-    if ns.tunnel:
-        if not ns.env:
-            print("--tunnel requires --env")
-            return 1
-        from tests.validator.tunnel import TunnelPool, install_sigint_handler
-        tunnel_pool = TunnelPool.for_env(
-            ns.env,
-            fdl_port=ns.tunnel_fdl_port,
-            od_port=ns.tunnel_od_port,
-            ao_port=ns.tunnel_ao_port,
-            rca_port=ns.tunnel_rca_port,
-        )
-        install_sigint_handler(tunnel_pool)
+    tunnel_pool, ok = _setup_tunnels(ns)
+    if not ok:
+        return 1
 
     if not ns.base_url:
         print("--base-url is required for chain runs.")
@@ -568,6 +863,12 @@ def main() -> int:
                    help="Re-score an existing result JSON without re-running questions.")
     p.add_argument("--eval-latest", action="store_true",
                    help="Re-score the most recent run file in results/.")
+    p.add_argument("--confirm-file", dest="confirm_file", type=str, default=None, metavar="PATH",
+                   help="Compare an existing scored run file against the baseline and, if it "
+                        "flags a targeted per-question regression, re-run those questions "
+                        "against the live service to confirm/heal (see --confirm-runs), then "
+                        "persist if it resolves to PASSED. Needs --base-url (or the run's "
+                        "stored base_url) reachable. Drives the UI 'Persist to DB' button.")
     p.add_argument("--skip-scored", action="store_true",
                    help="Skip records that already have complete scores (for resuming).")
     p.add_argument("--persist", action="store_true",
@@ -585,18 +886,20 @@ def main() -> int:
                    help="Skip regression comparison after --persist. Useful when there "
                         "is no baseline yet or when comparison is not desired.")
     p.add_argument("--baseline-n", dest="baseline_n", type=int, default=DEFAULT_N,
-                   help=f"Number of prior runs to use as the baseline window "
-                        f"(default: {DEFAULT_N}).")
+                   help=f"Baseline size: number of prior runs to compare against, and "
+                        f"the minimum required before any regression is assessed "
+                        f"(default: {DEFAULT_N}). With fewer than this many eligible "
+                        "prior runs on record, the regression check is skipped.")
     p.add_argument("--regression-delta", dest="regression_delta", type=float,
                    default=DEFAULT_DELTA,
-                   help=f"Score drop threshold for flagging a regression "
-                        f"(default: {DEFAULT_DELTA}).")
-    p.add_argument("--min-baseline-n", dest="min_baseline_n", type=int,
-                   default=DEFAULT_MIN_BASELINE_N,
-                   help=f"Minimum number of prior occurrences a question must have before "
-                        f"regressions are flagged for it (default: {DEFAULT_MIN_BASELINE_N}). "
-                        "Questions with fewer prior runs are compared but never flagged, "
-                        "preventing noise from newly-added or rarely-run questions.")
+                   help=f"Per-question score-drop threshold for informational "
+                        f"findings + breadth counting (default: {DEFAULT_DELTA}). "
+                        "The pass/fail verdict is driven by aggregate signals.")
+    p.add_argument("--confirm-runs", dest="confirm_runs", type=int, default=2,
+                   help="When a targeted per-question regression is flagged, re-run each "
+                        "flagged question this many times and keep only regressions that "
+                        "reproduce (filters agent-variance noise). 0 disables confirmation. "
+                        "Full-run path only — needs the live service. Default: 2.")
 
     p.add_argument("--workers", type=int, default=1,
                    help="Number of parallel workers for both collection and scoring "

@@ -26,6 +26,8 @@ from pathlib import Path  # noqa: E402
 from deepeval.test_case import LLMTestCase  # noqa: E402
 
 from tests.validator.bedrock_judge import BedrockJudge  # noqa: E402
+from tests.validator.records import is_chain_record, is_question_record  # noqa: E402
+from tests.validator.trace_capture import _tools_from_data  # noqa: E402
 from tests.validator.metrics import (  # noqa: E402
     PASS_THRESHOLD,
     INTERPRETATION_FLOWS,
@@ -68,11 +70,16 @@ def _check_tool_compliance(record: dict) -> dict | None:
     """Compare expected_tools from the catalog against tools_called in the result.
 
     Returns a compliance dict, or None if expected_tools is empty (no constraint).
+
+    Back-fills tools inferred from the returned data (source → tool) so that
+    server-side-direct flows (refresh) — and older run files captured before that
+    inference existed — report accurate compliance when re-evaluated in place.
     """
     expected = set(record.get("expected_tools") or [])
     if not expected:
         return None
     called = set(record.get("tools_called") or [])
+    called |= set(_tools_from_data(record.get("od_fdl_results"), record.get("tool_results")))
     missing = sorted(expected - called)
     extra = sorted(called - expected)
     return {
@@ -242,6 +249,37 @@ def _eval_record(record: dict, metrics: dict, schema_cache: dict[str, str]) -> d
         )
         eval_out["agent_response"] = {"score": score, "passed": passed, "reason": reason}
 
+    # refresh flow with no prose answer (e.g. AO refresh returns data, not text):
+    # score the refreshed data against the original on-screen data instead, and
+    # store it under agent_response so it flows through aggregation/comparison
+    # like any quality score.
+    elif flow == "refresh" and (record.get("tool_results") or od_fdl_results):
+        refreshed = {
+            "tool_results": record.get("tool_results"),
+            "od_fdl_results": [
+                {
+                    "schema": r.get("schema"),
+                    "columns": [c.get("columnName") for c in (r.get("column_meta") or [])],
+                    "rows": (r.get("rows") or [])[:5],
+                }
+                for r in od_fdl_results
+            ],
+        }
+        refreshed_ctx = json.dumps(refreshed, default=str)[:4000]
+        original_ctx = json.dumps(record.get("context_fixture") or {}, default=str)[:4000]
+        score, passed, reason = _safe_measure(
+            metrics["refresh_correctness"],
+            LLMTestCase(
+                input=question,
+                actual_output=refreshed_ctx,
+                context=[f"Original on-screen data before refresh:\n{original_ctx}"],
+            ),
+        )
+        eval_out["agent_response"] = {
+            "score": score, "passed": passed, "reason": reason,
+            "kind": "refresh_correctness",
+        }
+
     return eval_out
 
 
@@ -249,7 +287,7 @@ def _needs_scoring(record: dict) -> bool:
     ev = record.get("eval") or {}
     if not ev:
         return True
-    markers = ("TimeoutError", "ExpiredToken", "NoCredentials")
+    markers = ("TimeoutError", "ExpiredToken", "NoCredentials", "UnauthorizedSSO")
     for key in ("interpretation_coverage", "agent_response"):
         entry = ev.get(key) or {}
         if entry.get("score") is None:
@@ -350,11 +388,21 @@ def _score_one(record: dict, schema_cache: dict) -> dict:
     return eval_block
 
 
-def evaluate_run_file(run_path: Path, *, skip_scored: bool = False, workers: int = 1) -> dict:
+def evaluate_run_file(
+    run_path: Path,
+    *,
+    skip_scored: bool = False,
+    workers: int = 1,
+    only_flows: set[str] | None = None,
+    only_ids: set[int] | None = None,
+) -> dict:
     """Score all records in a run file in place. Returns the updated run dict.
 
     workers: number of parallel scoring threads (default 1 = sequential).
              Each thread creates its own BedrockJudge so metric state is isolated.
+    only_flows / only_ids: when set, restrict (re)scoring to matching question
+             records — used to re-score just a subset (e.g. only `refresh`) of a
+             completed report cheaply, leaving other records' scores untouched.
     """
     run = json.loads(run_path.read_text())
     schema_cache = load_schema_docs()
@@ -362,11 +410,13 @@ def evaluate_run_file(run_path: Path, *, skip_scored: bool = False, workers: int
     write_lock = threading.Lock()
     counter = [0]
 
-    chain_count = sum(1 for r in results if "chain_id" in r)
+    chain_count = sum(1 for r in results if is_chain_record(r))
     to_score = [
         (i, r) for i, r in enumerate(results)
-        if "question_id" in r  # skip chain records (scored separately by evaluate_chain_file)
+        if is_question_record(r)  # chain records are scored separately by evaluate_chain_file
         and not (skip_scored and not _needs_scoring(r))
+        and (only_flows is None or r.get("flow") in only_flows)
+        and (only_ids is None or r.get("question_id") in only_ids)
     ]
     already_scored = len(results) - chain_count - len(to_score)
     if chain_count:

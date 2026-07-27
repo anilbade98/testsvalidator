@@ -29,13 +29,15 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, TypedDict
 
 import boto3
+from boto3.dynamodb.conditions import Key
+
+from tests.validator.records import failed_question_ids, question_records, run_is_complete
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +80,11 @@ class RunRecord(TypedDict, total=False):
     interpretation_pass_rate: float
     sql_correctness_mean: float
     sql_correctness_pass_rate: float
+
+    # Per-flow agent_response aggregates, keyed by flow name:
+    #   {flow: {total, agent_response_mean, agent_response_pass_rate}}
+    # Drives flow-level regression detection.
+    by_flow: dict
 
     # Verdict + comparator output (populated by CSA-85050)
     overall_status: str            # PASSED | REGRESSION | FAILED
@@ -335,6 +342,9 @@ def _build_run_record(run: dict) -> RunRecord:
         "interpretation_pass_rate": ic.get("pass_rate"),
         "sql_correctness_mean":      sc.get("mean"),
         "sql_correctness_pass_rate": sc.get("pass_rate"),
+        # Per-flow agent_response means/pass-rates — enables flow-level regression
+        # detection (a drop concentrated in one flow that the overall mean hides).
+        "by_flow":        agg.get("by_flow"),
         "overall_status": run.get("overall_status"),
         "comparison":     run.get("comparison"),
     }
@@ -389,7 +399,7 @@ def _build_question_record(run_id: str, result: dict) -> QuestionRecord:
     }
 
 
-def persist_run_file(run_path: Path) -> None:
+def persist_run_file(run_path: Path) -> bool:
     """Adapter entry point: read a validator run JSON and persist to DynamoDB.
 
     Called by `tests/validator/run.py` after `write_aggregated()` whenever the
@@ -397,6 +407,10 @@ def persist_run_file(run_path: Path) -> None:
     so the caller only has to supply the file path. Region resolution is
     handled by boto3's own chain (`AWS_REGION`, `AWS_DEFAULT_REGION`, profile,
     SDK default) — see `DynamoDBWriter` for details.
+
+    Returns True if the run was persisted, False if it was skipped because the
+    run is incomplete (a question errored / returned no result). Incomplete runs
+    are never written — they must not pollute the shared baseline tables.
     """
     run = json.loads(Path(run_path).read_text())
     env = run.get("env")
@@ -406,13 +420,179 @@ def persist_run_file(run_path: Path) -> None:
             "Was the run executed with --env?"
         )
 
+    if not run_is_complete(run.get("results")):
+        bad = failed_question_ids(run.get("results"))
+        logger.warning(
+            "Run %s is incomplete (%d failed question(s): %s) — NOT persisting to "
+            "DynamoDB.", run.get("run_id"), len(bad), bad,
+        )
+        return False
+
     writer = DynamoDBWriter(env=_resolve_env(env))
     run_record = _build_run_record(run)
     run_id = run_record["run_id"]
     if not run_id:
         raise ValueError(f"{run_path}: cannot persist — run JSON is missing 'run_id'.")
 
-    question_records = [
-        _build_question_record(run_id, r) for r in (run.get("results") or [])
+    # Chain records live in the same `results` list but are keyed by `chain_id`,
+    # not `question_id`, and are scored/persisted separately. Excluding them here
+    # keeps them from surfacing as "malformed" question records downstream.
+    q_records = [
+        _build_question_record(run_id, r) for r in question_records(run.get("results"))
     ]
-    writer.persist(run_record, question_records)
+    writer.persist(run_record, q_records)
+    return True
+
+
+# ── Reader: DynamoDB → local run-JSON shape ──────────────────────────────────
+#
+# The History tab needs to show persisted runs with the *same* detail as local
+# run files. Persistence flattens the nested run JSON into DynamoDB items; the
+# reader is the exact inverse — it rebuilds the run dict (run meta + results[]
+# with nested `eval`) so the History view and the HTML reporter can consume a
+# persisted run identically to a local one.
+
+
+def _from_ddb(value: Any) -> Any:
+    """Inverse of `_to_ddb`: Decimal → int/float, recursing lists/dicts."""
+    if isinstance(value, Decimal):
+        # Integral decimals (counts, ids) come back as int; the rest as float.
+        return int(value) if value == value.to_integral_value() else float(value)
+    if isinstance(value, list):
+        return [_from_ddb(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _from_ddb(v) for k, v in value.items()}
+    return value
+
+
+def _reconstruct_result(q: dict) -> dict:
+    """Rebuild one `results[]` entry (with nested `eval`) from a QuestionRecord."""
+    return {
+        "question_id": q.get("question_id"),
+        "question": q.get("question"),
+        "flow": q.get("flow"),
+        "complexity": q.get("complexity"),
+        "priority": q.get("priority"),
+        "agent_response": q.get("agent_response"),
+        "duration_ms": q.get("duration_ms"),
+        "usage": {
+            "total_tokens": q.get("total_tokens"),
+            "input_tokens": q.get("input_tokens"),
+            "output_tokens": q.get("output_tokens"),
+            "cache_read_tokens": q.get("cache_read_tokens"),
+        },
+        "od_fdl_results": q.get("od_fdl_results") or [],
+        # tools_called isn't stored individually — only its count. Rebuild a
+        # placeholder list of the right length so aggregate() recovers the count.
+        "tools_called": [None] * int(q.get("tool_call_count") or 0),
+        "eval": {
+            "agent_response": {
+                "score": q.get("agent_response_score"),
+                "passed": q.get("agent_response_passed"),
+                "reason": q.get("agent_response_reason"),
+            },
+            "interpretation_coverage": {
+                "score": q.get("interpretation_score"),
+                "passed": q.get("interpretation_passed"),
+                "reason": q.get("interpretation_reason"),
+            },
+            "per_trace": q.get("sql_per_trace_scores") or [],
+        },
+        "error": q.get("error"),
+        "regression_flag": q.get("regression_flag"),
+    }
+
+
+class DynamoDBReader:
+    """Reads persisted runs back into the local run-JSON shape.
+
+    ``env`` must already be the long form used in table names (e.g.
+    ``staging-illum``); use ``_resolve_env`` on CLI short forms first.
+    """
+
+    def __init__(self, env: str):
+        if not env:
+            raise ValueError("env is required (e.g. 'staging-illum')")
+        self.env = env
+        self.runs_table_name = f"{env}-validator-runs"
+        self.questions_table_name = f"{env}-validator-question-records"
+        self._dynamodb = None
+
+    def _tables(self):
+        if self._dynamodb is None:
+            self._dynamodb = boto3.resource("dynamodb")
+        return (
+            self._dynamodb.Table(self.runs_table_name),
+            self._dynamodb.Table(self.questions_table_name),
+        )
+
+    def list_runs(self, limit: int = 50) -> list[dict]:
+        """Return persisted run records for this env, newest first."""
+        runs_table, _ = self._tables()
+        resp = runs_table.query(
+            IndexName="env-timestamp-index",
+            KeyConditionExpression=Key("env").eq(self.env),
+            ScanIndexForward=False,
+            Limit=limit,
+        )
+        return [_from_ddb(item) for item in resp.get("Items", [])]
+
+    def load_run(self, run_id: str) -> dict | None:
+        """Reconstruct a full run dict (run meta + results[] + aggregated_scores).
+
+        Returns None if the run_id isn't present. aggregated_scores is recomputed
+        from the reconstructed results so it matches the local shape exactly
+        (means, pass rates, by-flow); persisted run-level averages that can't be
+        recomputed (SQL/tool call counts) are copied over.
+        """
+        from tests.validator.aggregator import aggregate
+
+        runs_table, questions_table = self._tables()
+        run_item = runs_table.get_item(Key={"run_id": run_id}).get("Item")
+        if not run_item:
+            return None
+        run_item = _from_ddb(run_item)
+
+        items: list[dict] = []
+        kwargs: dict = {"KeyConditionExpression": Key("run_id").eq(run_id)}
+        while True:
+            resp = questions_table.query(**kwargs)
+            items.extend(resp.get("Items", []))
+            last_key = resp.get("LastEvaluatedKey")
+            if not last_key:
+                break
+            kwargs["ExclusiveStartKey"] = last_key
+        questions = sorted(
+            (_from_ddb(i) for i in items),
+            key=lambda q: q.get("question_id") or 0,
+        )
+
+        run = {
+            "run_id": run_item.get("run_id"),
+            "run_timestamp": run_item.get("run_timestamp"),
+            "env": run_item.get("env"),
+            "base_url": run_item.get("base_url"),
+            "model_id": run_item.get("model_id"),
+            "filter_config": run_item.get("filter_config"),
+            "overall_status": run_item.get("overall_status"),
+            "comparison": run_item.get("comparison"),
+            "results": [_reconstruct_result(q) for q in questions],
+        }
+        agg = aggregate(run)
+        # These aren't derivable from stored question records — carry the
+        # persisted run-level values over so they aren't lost.
+        for field in ("avg_tool_call_count", "avg_sql_call_count"):
+            if run_item.get(field) is not None:
+                agg[field] = run_item[field]
+        run["aggregated_scores"] = agg
+        return run
+
+
+def list_persisted_runs(env: str, limit: int = 50) -> list[dict]:
+    """Convenience wrapper: list persisted runs for an env (short or long form)."""
+    return DynamoDBReader(env=_resolve_env(env)).list_runs(limit=limit)
+
+
+def load_persisted_run(env: str, run_id: str) -> dict | None:
+    """Convenience wrapper: reconstruct one persisted run (env short or long form)."""
+    return DynamoDBReader(env=_resolve_env(env)).load_run(run_id)

@@ -212,6 +212,29 @@ def build_metrics(
                 "contradict visible SQL rows or are clearly fabricated.",
             ],
         ),
+
+        # Refresh flow returns refreshed data (not prose). Score the refreshed
+        # dataset (ACTUAL_OUTPUT) against the original on-screen data (CONTEXT).
+        "refresh_correctness": _g(
+            "Refresh Correctness",
+            [
+                "The refreshed data covers the same data source(s) as the original "
+                "(e.g. automation-opportunity, anomalies, FDL, or Athena) — no expected "
+                "source is missing and no unrelated source is introduced.",
+
+                "The refreshed data exposes the same columns / schema and the same kind of "
+                "entities (intents, categories, metrics) as the original. Penalize schema "
+                "drift, renamed or dropped columns, or entirely different dimensions.",
+
+                "The refresh actually returned current data: it is non-empty and free of "
+                "errors, unless the source genuinely has no data now. An empty or errored "
+                "result where the original had rows is a failure.",
+
+                "The refreshed values are plausible and type/format-consistent with the "
+                "original (same units, ranges, and formats). Only penalize values that are "
+                "clearly corrupted or inconsistent — updated numbers are expected and correct.",
+            ],
+        ),
     }
 
 

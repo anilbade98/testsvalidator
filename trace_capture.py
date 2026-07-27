@@ -55,6 +55,33 @@ def _tools_called(events: list[dict]) -> list[str]:
     return ordered
 
 
+# Maps a returned data source to the orchestrator tool that produces it. The
+# refresh flow calls these tools directly server-side (bypassing the
+# orchestrator), so it emits no tool_start events — we recover tool usage from
+# the data that actually came back instead.
+_SOURCE_TO_TOOL = {
+    "fdl": "get_fdl_data",
+    "od": "get_athena_data",
+    "ao": "ask_automation_opportunity",
+    "rca": "query_anomalies",
+}
+
+
+def _tools_from_data(od_fdl_results: list[dict], tool_results: dict) -> list[str]:
+    """Infer tool names from the data returned (source → tool), for flows that
+    bypass the orchestrator and emit no tool_start events (e.g. refresh)."""
+    tools: list[str] = []
+    for r in od_fdl_results or []:
+        t = _SOURCE_TO_TOOL.get(r.get("tool_name") or "")
+        if t and t not in tools:
+            tools.append(t)
+    for src in (tool_results or {}):
+        t = _SOURCE_TO_TOOL.get(src)
+        if t and t not in tools:
+            tools.append(t)
+    return tools
+
+
 def _extract_sub_reasoning(events: list[dict]) -> dict[str, str]:
     """Collect sub-agent reasoning text per source from `reasoning` SSE events.
 
@@ -201,6 +228,15 @@ def build_record(
     tool_results = _extract_tool_results(events)
     clarification_questions = clarification_questions or []
 
+    # Union of tools seen in the stream (orchestrator flows) and tools inferred
+    # from the returned data (server-side-direct flows like refresh, which emit
+    # no tool_start events). Keeps tool-compliance accurate for both.
+    _stream_tools = _tools_called(events)
+    tools_called = _stream_tools + [
+        t for t in _tools_from_data(od_fdl_results, tool_results)
+        if t not in _stream_tools
+    ]
+
     record: dict = {
         "question_id": question_meta.get("id"),
         "question": question_meta.get("question"),
@@ -209,7 +245,7 @@ def build_record(
         "priority": bool(question_meta.get("priority", False)),
         "tags": question_meta.get("tags", []),
         "expected_tools": question_meta.get("expected_tools", []),
-        "tools_called": _tools_called(events),
+        "tools_called": tools_called,
         "turn_count": turn_count,
         "clarification_requested": bool(clarification_questions),
         "clarification_questions": clarification_questions,

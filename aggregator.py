@@ -7,23 +7,27 @@ from collections import defaultdict
 from pathlib import Path
 from statistics import mean as _mean
 
+from tests.validator.records import question_records, run_is_complete
+
 
 def _safe_mean(values: list[float]) -> float | None:
     return _mean(values) if values else None
 
 
 def aggregate(run: dict) -> dict:
-    # Only aggregate single-turn question records; chain records (chain_id/turns) are excluded.
-    results = [r for r in (run.get("results") or []) if "question_id" in r]
+    # Only aggregate single-turn question records; chain records are scored separately.
+    results = question_records(run.get("results"))
     total = len(results)
     if total == 0:
         return {"total": 0}
 
     errors = sum(1 for r in results if r.get("error"))
-    durations = [r.get("duration_ms", 0) for r in results]
-    tokens_total = [(r.get("usage") or {}).get("total_tokens", 0) for r in results]
-    tokens_in = [(r.get("usage") or {}).get("input_tokens", 0) for r in results]
-    tokens_out = [(r.get("usage") or {}).get("output_tokens", 0) for r in results]
+    # Coerce None -> 0: errored questions (and runs reconstructed from DynamoDB,
+    # where empty fields are dropped on persist) can carry None here.
+    durations = [(r.get("duration_ms") or 0) for r in results]
+    tokens_total = [((r.get("usage") or {}).get("total_tokens") or 0) for r in results]
+    tokens_in = [((r.get("usage") or {}).get("input_tokens") or 0) for r in results]
+    tokens_out = [((r.get("usage") or {}).get("output_tokens") or 0) for r in results]
     sql_calls = [len(r.get("od_fdl_results") or []) for r in results]
     tool_calls = [len(r.get("tools_called") or []) for r in results]
 
@@ -129,6 +133,16 @@ def write_aggregated(run_path: Path) -> dict:
     run = json.loads(run_path.read_text())
     agg = aggregate(run)
     run["aggregated_scores"] = agg
+    # A run where any question errored or returned no result is FAILED regardless
+    # of scores. Set it here so the status is correct even when the comparator
+    # (which also enforces this) doesn't run. The comparator may later refine a
+    # complete run's status to PASSED / REGRESSION. If a run is complete but still
+    # carries a stale FAILED (e.g. re-aggregated after an earlier incomplete run),
+    # clear it so the verdict isn't wrongly pinned.
+    if not run_is_complete(run.get("results")):
+        run["overall_status"] = "FAILED"
+    elif run.get("overall_status") == "FAILED":
+        run.pop("overall_status", None)
     run_path.write_text(json.dumps(run, indent=2, default=str))
     return agg
 

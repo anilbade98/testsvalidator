@@ -366,6 +366,24 @@ class TunnelPool:
         return pool
 
 
+def alb_tunnel(env: str, *, local_port: int = 8080) -> ServiceTunnel:
+    """Build (not-yet-started) an SSM port-forward to the analytics-agentic ALB, so the
+    deployed service is reachable at localhost:<local_port>. Call .start() to open it.
+
+    Mirrors the `tunnel` skill: localhost:<local_port> ->
+    analytics-agentic-alb.<env>-illum.internal:80 via the <env>-illum jump server.
+    """
+    profile = f"{env}-illum"
+    return ServiceTunnel(
+        name="alb",
+        remote_host=f"analytics-agentic-alb.{env}-illum.internal",
+        remote_port=80,
+        local_port=local_port,
+        relay_instance_id=_find_jump_server(env, profile),
+        aws_profile=profile,
+    )
+
+
 def install_sigint_handler(pool: TunnelPool) -> None:
     original = signal.getsignal(signal.SIGINT)
 

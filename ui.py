@@ -126,18 +126,20 @@ def _base_args(out_path: Path) -> list[str]:
         args.append("--skip-eval")
     if st.session_state.get("use_persist") and not st.session_state.get("skip_eval"):
         args.append("--persist")
+        # Persisting from the UI is a deliberate user action. The localhost guard
+        # exists to stop unattended CI/scripts from polluting shared tables; it also
+        # trips on the deployed service reached via the ALB tunnel (localhost:8080),
+        # so bypass it here — same as the batch script and the History Persist button.
+        args.append("--allow-local-persist")
         if st.session_state.get("no_compare"):
             args.append("--no-compare")
         else:
             baseline_n = int(st.session_state.get("baseline_n", 10))
-            reg_delta = float(st.session_state.get("regression_delta", 0.1))
+            reg_delta = float(st.session_state.get("regression_delta", 0.2))
             if baseline_n != 10:
                 args += ["--baseline-n", str(baseline_n)]
-            if abs(reg_delta - 0.1) > 1e-9:
+            if abs(reg_delta - 0.2) > 1e-9:
                 args += ["--regression-delta", str(reg_delta)]
-            min_b_n = int(st.session_state.get("min_baseline_n", 2))
-            if min_b_n != 2:
-                args += ["--min-baseline-n", str(min_b_n)]
     _workers = int(st.session_state.get("workers", 1))
     if _workers > 1:
         args += ["--workers", str(_workers)]
@@ -198,6 +200,84 @@ def _run_env() -> dict:
     return env_vars
 
 
+def _verify_alb_target(local_port: int) -> tuple[bool, str]:
+    """Confirm the tunnel target actually serves THIS service (not just any /health).
+
+    Checks the FastAPI schema for the runner's endpoint. Returns (ok, reason). If the
+    schema can't be read (network hiccup, openapi disabled), don't block — return ok.
+    """
+    try:
+        r = requests.get(f"http://localhost:{local_port}/openapi.json", timeout=8)
+        if r.status_code != 200:
+            return True, ""  # can't introspect — don't hard-block
+        paths = (r.json() or {}).get("paths", {})
+        if "/api/v1/chat/stream" in paths:
+            return True, ""
+        sample = ", ".join(sorted(paths)[:6]) or "(none)"
+        return False, (f"the service on localhost:{local_port} has no /api/v1/chat/stream "
+                       f"(it exposes: {sample} …) — looks like a different app.")
+    except Exception:
+        return True, ""  # verification is best-effort; a probe error shouldn't block
+
+
+def _ensure_alb_tunnel(env: str, local_port: int = 8080) -> None:
+    """Auto-open (and keep alive) the SSM ALB tunnel to the deployed service so
+    localhost:<local_port> reaches it. Idempotent across Streamlit reruns: an alive
+    tunnel for the same (env, port) is left as-is; a stale/dead/changed one is rebuilt.
+    """
+    from tests.validator.tunnel import alb_tunnel
+    t = st.session_state.get("_alb_tunnel")
+    same = st.session_state.get("_alb_tunnel_key") == (env, local_port)
+    if t is not None and same and t.is_alive():
+        st.caption(f"✅ ALB tunnel live — localhost:{local_port} → {env} analytics-agentic-alb:80")
+        return
+    if t is not None:  # stale / dead / env or port changed
+        try:
+            t.stop()
+        except Exception:
+            pass
+    with st.spinner(f"Opening ALB tunnel to {env} (localhost:{local_port}) …"):
+        try:
+            t = alb_tunnel(env, local_port=local_port)
+            t.start()
+        except Exception as e:
+            st.session_state._alb_tunnel = None
+            st.session_state._alb_tunnel_key = None
+            st.error(f"ALB tunnel failed: {e}")
+            st.caption("Open it manually with the `tunnel` skill and set the URL above.")
+            return
+    # A /health 200 isn't proof: any service answers /health. Verify the target
+    # actually exposes THIS service's endpoint before trusting the tunnel.
+    ok, why = _verify_alb_target(local_port)
+    if not ok:
+        try:
+            t.stop()
+        except Exception:
+            pass
+        st.session_state._alb_tunnel = None
+        st.session_state._alb_tunnel_key = None
+        st.error(f"ALB tunnel reached the wrong service: {why}")
+        st.caption(
+            f"`analytics-agentic-alb.{env}-illum.internal` is not fronting this service in "
+            f"{env}. Confirm it's deployed there, or use Local mode (python main.py)."
+        )
+        return
+    st.session_state._alb_tunnel = t
+    st.session_state._alb_tunnel_key = (env, local_port)
+    st.success(f"✅ ALB tunnel live — localhost:{local_port} → {env} analytics-agentic-alb:80")
+
+
+def _stop_alb_tunnel() -> None:
+    t = st.session_state.get("_alb_tunnel")
+    if t is not None:
+        try:
+            t.stop()
+        except Exception:
+            pass
+    st.session_state._alb_tunnel = None
+    st.session_state._alb_tunnel_key = None
+
+
 def _auth_login(email: str, password: str, env_name: str) -> dict:
     url = f"https://na1.{env_name}.nice-incontact.com/public/authentication/v1/login"
     resp = requests.post(url, json={"email": email, "password": password}, timeout=30)
@@ -214,6 +294,11 @@ def _push_status(run_path: Path) -> tuple[str, str]:
         run = json.loads(run_path.read_text(encoding="utf-8"))
     except Exception:
         return "warning", "Could not read result file."
+    return _run_status(run)
+
+
+def _run_status(run: dict) -> tuple[str, str]:
+    """Status banner (type, message) for a run dict — local or persisted."""
     agg = run.get("aggregated_scores") or {}
     total = agg.get("total", 0)
     errors = agg.get("errors", 0)
@@ -222,6 +307,18 @@ def _push_status(run_path: Path) -> tuple[str, str]:
     mean = ar.get("mean")
     if total == 0:
         return "warning", "No questions ran."
+
+    # A run marked FAILED is incomplete (a question errored / returned no result)
+    # and is excluded from regression baselines — surface that first.
+    if run.get("overall_status") == "FAILED":
+        comparison = run.get("comparison") or {}
+        bad = comparison.get("failed_question_ids")
+        detail = f" (questions {bad})" if bad else ""
+        return "error", (
+            f"FAILED — run incomplete{detail}: not all questions executed "
+            "successfully, so it is excluded from baselines."
+        )
+
     if errors and errors / total > 0.3:
         return "error", f"HIGH ERROR RATE: {errors}/{total} questions errored."
     if pass_rate is None:
@@ -246,10 +343,17 @@ def _push_status(run_path: Path) -> tuple[str, str]:
     overall_status = run.get("overall_status")
     if overall_status == "REGRESSION":
         comparison = run.get("comparison") or {}
-        n_reg = len(comparison.get("regressions") or [])
         baseline_runs = comparison.get("baseline_runs", 0)
+        _labels = {
+            "sigma": "aggregate drop", "trend": "downward trend",
+            "floor": "below pass-rate floor", "breadth": "broad per-question drop",
+            "targeted": "targeted break", "flow": "per-flow drop",
+            "perf_latency": "latency regression", "perf_tokens": "token-cost regression",
+        }
+        kinds = comparison.get("regression_kinds") or []
+        why = ", ".join(str(_labels.get(k) or k) for k in kinds) or "vs baseline"
         return "warning", (
-            f"REGRESSION — {n_reg} regression(s) vs {baseline_runs}-run baseline. "
+            f"REGRESSION ({why}) vs {baseline_runs}-run baseline. "
             f"Quality: {pass_rate*100:.0f}% passed{mean_str}."
         )
 
@@ -281,25 +385,49 @@ def _reader_thread(proc: subprocess.Popen, out_queue: queue.Queue) -> None:
     out_queue.put(None)  # sentinel: process finished
 
 
+def _launch(args: list, *, origin: str, out_path, pending: list | None = None) -> None:
+    """Start a validator subprocess and set up live streaming, then rerun.
+
+    Single source of truth for the launch ritual shared by the Run tab and the
+    History-tab actions: resets run/progress state, spawns the reader thread, and
+    records `origin` so the live panel renders under the tab that launched it.
+    """
+    st.session_state.run_origin = origin
+    st.session_state.pending_args = pending or []
+    st.session_state.last_run_path = out_path
+    st.session_state.run_output = [f"$ {' '.join(args)}", ""]
+    st.session_state.reader_done = False
+    st.session_state.prog_phase = ""
+    st.session_state.prog_n = 0
+    st.session_state.prog_total = 0
+    proc = _start_proc(args)
+    st.session_state.proc = proc
+    q: queue.Queue = queue.Queue()
+    st.session_state.out_queue = q
+    threading.Thread(target=_reader_thread, args=(proc, q), daemon=True).start()
+    st.rerun()
+
+
 _HTML_INLINE_LIMIT = 400_000  # bytes — components.html WebSocket payload cap
 
 
-def _html_report_section(html_path: Path, height: int = 900, key_suffix: str = "") -> None:
-    """Render an HTML report file inline, with a download button always shown.
+def _html_report_section(
+    html_content: str, file_name: str, height: int = 900, key_suffix: str = "",
+) -> None:
+    """Render an HTML report string inline, with a download button always shown.
 
     Uses streamlit.components.v1.html() for inline preview.  Reports larger than
     _HTML_INLINE_LIMIT bytes are not embedded — they are too big for a single
     WebSocket payload and cause 'websocket.send after websocket.close' errors.
     Use the download button to open them in a browser instead.
     """
-    html_content = html_path.read_text(encoding="utf-8")
     size_kb = len(html_content) // 1024
     st.download_button(
         f"⬇ Download HTML report ({size_kb} KB)",
         html_content,
-        file_name=html_path.name,
+        file_name=file_name,
         mime="text/html",
-        key=f"dl_{html_path.name}_{key_suffix}",
+        key=f"dl_{file_name}_{key_suffix}",
     )
     if len(html_content) <= _HTML_INLINE_LIMIT:
         _stc.html(html_content, height=height, scrolling=True)
@@ -319,7 +447,7 @@ for _k, _v in [
     ("service_mode", "local"), ("env_name", "staging"),
     ("base_url", "http://localhost:80"),
     ("skip_eval", False), ("use_persist", False), ("workers", 1), ("reference_date", ""),
-    ("no_compare", False), ("baseline_n", 10), ("regression_delta", 0.1), ("min_baseline_n", 2),
+    ("no_compare", False), ("baseline_n", 10), ("regression_delta", 0.2),
     ("_resolved_token", ""), ("_resolved_tenant", ""),
     ("_login_email", ""), ("_login_password", ""), ("_login_env", ""),
 ]:
@@ -393,18 +521,20 @@ with st.sidebar:
             "URL", value=st.session_state.base_url,
             help="URL of the locally running service.",
         )
-        use_tunnel = True
         st.caption("SSM tunnels: auto-enabled for FDL/OD/AO/RCA")
+        _stop_alb_tunnel()  # ALB tunnel only applies to deployed mode
     else:
         _default_deployed = "http://localhost:8080"
         if "localhost" not in st.session_state.base_url or st.session_state.base_url == "http://localhost:80":
             st.session_state.base_url = _default_deployed
         st.session_state.base_url = st.text_input(
             "URL", value=st.session_state.base_url,
-            help="localhost:8080 when ALB tunnel is open. Change port if needed.",
+            help="localhost:8080 via the ALB tunnel (opened automatically). Change port if needed.",
         )
-        use_tunnel = False
-        st.caption(f"Open ALB tunnel first: `/tunnel {st.session_state.env_name}` in a terminal")
+        # Auto-open the ALB tunnel so the deployed service is reachable locally.
+        from urllib.parse import urlparse
+        _alb_port = urlparse(st.session_state.base_url).port or 8080
+        _ensure_alb_tunnel(st.session_state.env_name, _alb_port)
 
     st.divider()
     st.header("Run options")
@@ -422,22 +552,20 @@ with st.sidebar:
             help="Do not compare against prior runs after persisting.",
         )
         if not st.session_state.no_compare:
-            cmp_cols = st.columns(3)
+            cmp_cols = st.columns(2)
             st.session_state.baseline_n = cmp_cols[0].number_input(
                 "Baseline runs (N)", min_value=1, max_value=50,
                 value=st.session_state.baseline_n,
-                help="Number of prior runs to average as the baseline.",
+                help="Number of prior runs to average as the baseline, and the "
+                     "minimum required before any regression is assessed. With "
+                     "fewer eligible prior runs, the check is skipped.",
             )
             st.session_state.regression_delta = cmp_cols[1].number_input(
-                "Regression delta", min_value=0.01, max_value=1.0,
+                "Per-question delta", min_value=0.01, max_value=1.0,
                 value=st.session_state.regression_delta, step=0.01, format="%.2f",
-                help="Score drop threshold to flag a regression.",
-            )
-            st.session_state.min_baseline_n = cmp_cols[2].number_input(
-                "Min baseline runs", min_value=1, max_value=20,
-                value=st.session_state.min_baseline_n,
-                help="Min prior occurrences a question needs before regressions are flagged. "
-                     "Prevents noise from newly-added or rarely-run questions.",
+                help="Per-question score-drop threshold (informational findings + "
+                     "breadth counting). The pass/fail verdict is driven by the "
+                     "low-variance aggregate signals, not this.",
             )
     st.session_state.workers = st.slider(
         "Workers", min_value=1, max_value=10,
@@ -508,79 +636,30 @@ _n_selected = len(_selected["q"]) + len(_selected["c"])
 
 # - Tabs -----------------------------------
 
-tab_run, tab_history, tab_catalog = st.tabs(["Run", "History", "Catalog"])
+def _collapse_blank_lines(lines: list) -> str:
+    """Join streamed output, collapsing runs of blank/whitespace-only lines to a
+    single blank and trimming leading blanks. Keeps single-blank separators (e.g.
+    between eval boxes) while killing the long empty gaps the confirm/re-run phase
+    produces during its quiet stretches."""
+    out: list = []
+    prev_blank = False
+    for ln in lines:
+        blank = (str(ln).strip() == "")
+        if blank and prev_blank:
+            continue
+        out.append("" if blank else ln)
+        prev_blank = blank
+    while out and out[0] == "":
+        out.pop(0)
+    return "\n".join(out)
 
 
-# - Tab: Run ---------------------------------
-
-with tab_run:
-    # Controls
-    if not st.session_state._resolved_token:
-        st.warning("No token - log in or paste a bearer token in the sidebar.")
-
-    preview_plan = _build_run_plan("preview", _selected)
-    with st.expander("CLI command"):
-        if preview_plan:
-            for step in preview_plan:
-                st.caption(step["label"])
-                st.code(" ".join(step["args"]), language="bash")
-        else:
-            st.caption("No tests selected.")
-
-    ctrl_cols = st.columns([3, 1, 1])
-    with ctrl_cols[0]:
-        start = st.button(
-            f"Run {_n_selected} test{'s' if _n_selected != 1 else ''}",
-            type="primary", width="stretch",
-            disabled=bool(st.session_state.proc) or _n_selected == 0 or not st.session_state._resolved_token,
-        )
-    with ctrl_cols[1]:
-        stop = st.button("Stop", width="stretch", disabled=not bool(st.session_state.proc))
-    with ctrl_cols[2]:
-        if st.button("New run", width="stretch", disabled=bool(st.session_state.proc)):
-            st.session_state.last_run_path = None
-            st.session_state.run_output = []
-            st.session_state.reader_done = False
-            st.session_state.pending_args = []
-            st.session_state.prog_phase = ""
-            st.session_state.prog_n = 0
-            st.session_state.prog_total = 0
-            st.rerun()
-
-    # Start process (first step; remaining steps stored in pending_args)
-    if start:
-        RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-        ts = time.strftime("%Y%m%d_%H%M%S", time.gmtime())
-        plan = _build_run_plan(ts, _selected)
-        if not plan:
-            st.warning("Nothing to run.")
-        else:
-            first = plan[0]
-            st.session_state.pending_args = plan[1:]
-            st.session_state.last_run_path = first["out_path"]
-            st.session_state.run_output = [
-                f"$ {' '.join(first['args'])}",
-                "",
-            ]
-            st.session_state.reader_done = False
-            st.session_state.prog_phase = ""
-            st.session_state.prog_n = 0
-            st.session_state.prog_total = 0
-            proc = _start_proc(first["args"])
-            st.session_state.proc = proc
-            q: queue.Queue = queue.Queue()
-            st.session_state.out_queue = q
-            threading.Thread(target=_reader_thread, args=(proc, q), daemon=True).start()
-            st.rerun()
-
-    # Stop process (also clears pending steps)
-    if stop and st.session_state.proc:
-        st.session_state.proc.terminate()
-        st.session_state.proc = None
-        st.session_state.pending_args = []
-        st.session_state.run_output.append("-- stopped --")
-        st.rerun()
-
+def _live_run_panel(key_suffix: str) -> None:
+    """Stream the active subprocess's output + progress here, then render the
+    status banner + HTML report once it finishes. Rendered under whichever tab
+    launched the run (see st.session_state.run_origin) so its output isn't stranded
+    on the Run tab. key_suffix keeps embedded-report component keys unique per tab.
+    """
     _COLLECT_RE = re.compile(r"^\[(\d+)/(\d+)\]")
     _EVAL_RE = re.compile(r"^\[eval (\d+)/(\d+)\]")
 
@@ -650,7 +729,7 @@ with tab_run:
             # Push current output and progress to browser
             _refresh_prog()
             output_area.code(
-                "\n".join(st.session_state.run_output),
+                _collapse_blank_lines(st.session_state.run_output),
                 language="text",
             )
 
@@ -681,84 +760,223 @@ with tab_run:
                 st.error(status_msg)
 
         with st.expander("Run log", expanded=False):
-            st.code("\n".join(st.session_state.run_output), language="text")
+            st.code(_collapse_blank_lines(st.session_state.run_output), language="text")
 
         html_path = run_path.with_suffix(".html") if run_path.exists() else None
         if html_path and html_path.exists():
             st.subheader("Report")
-            _html_report_section(html_path, height=950, key_suffix="run")
+            _html_report_section(
+                html_path.read_text(encoding="utf-8"), html_path.name,
+                height=950, key_suffix=key_suffix,
+            )
         else:
             st.info("No HTML report yet (run without -skip-eval to generate one).")
 
     elif st.session_state.run_output:
         # Not yet started streaming (between start click and first loop iteration)
-        output_area.code("\n".join(st.session_state.run_output), language="text")
+        output_area.code(_collapse_blank_lines(st.session_state.run_output), language="text")
+
+
+tab_run, tab_history, tab_catalog = st.tabs(["Run", "History", "Catalog"])
+
+
+# - Tab: Run ---------------------------------
+
+with tab_run:
+    # Controls
+    if not st.session_state._resolved_token:
+        st.warning("No token - log in or paste a bearer token in the sidebar.")
+
+    preview_plan = _build_run_plan("preview", _selected)
+    with st.expander("CLI command"):
+        if preview_plan:
+            for step in preview_plan:
+                st.caption(step["label"])
+                st.code(" ".join(step["args"]), language="bash")
+        else:
+            st.caption("No tests selected.")
+
+    ctrl_cols = st.columns([3, 1, 1])
+    with ctrl_cols[0]:
+        start = st.button(
+            f"Run {_n_selected} test{'s' if _n_selected != 1 else ''}",
+            type="primary", width="stretch",
+            disabled=bool(st.session_state.proc) or _n_selected == 0 or not st.session_state._resolved_token,
+        )
+    with ctrl_cols[1]:
+        stop = st.button("Stop", width="stretch", disabled=not bool(st.session_state.proc))
+    with ctrl_cols[2]:
+        if st.button("New run", width="stretch", disabled=bool(st.session_state.proc)):
+            st.session_state.last_run_path = None
+            st.session_state.run_output = []
+            st.session_state.reader_done = False
+            st.session_state.pending_args = []
+            st.session_state.run_origin = "run"
+            st.session_state.prog_phase = ""
+            st.session_state.prog_n = 0
+            st.session_state.prog_total = 0
+            st.rerun()
+
+    # Start process (first step; remaining steps stored in pending_args)
+    if start:
+        RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+        ts = time.strftime("%Y%m%d_%H%M%S", time.gmtime())
+        plan = _build_run_plan(ts, _selected)
+        if not plan:
+            st.warning("Nothing to run.")
+        else:
+            first = plan[0]
+            _launch(first["args"], origin="run", out_path=first["out_path"], pending=plan[1:])
+
+    # Stop process (also clears pending steps)
+    if stop and st.session_state.proc:
+        st.session_state.proc.terminate()
+        st.session_state.proc = None
+        st.session_state.pending_args = []
+        st.session_state.run_output.append("-- stopped --")
+        st.rerun()
+
+    # Render the live panel here unless this run was launched from the History tab.
+    if st.session_state.get("run_origin", "run") != "history":
+        _live_run_panel("run")
 
 
 # - Tab: History (combined overview + details) ----------------
 
 with tab_history:
-    all_files = sorted(
-        list(RESULTS_DIR.glob("run_*.json")) + list(RESULTS_DIR.glob("chains_*.json")),
-        key=lambda p: p.name, reverse=True,
-    )
+    # If a re-eval / persist was launched from THIS tab, stream its output here
+    # (rather than stranding it on the Run tab). While the process is live the
+    # panel's blocking loop keeps execution here; the rest of the tab renders once
+    # it finishes.
+    if st.session_state.get("run_origin") == "history":
+        _live_run_panel("hist")
 
-    if not all_files:
-        st.info("No runs found. Start an evaluation from the Run tab.")
-    else:
-        # ?? Summary table ??????????????????????????????????????????????????????
-        history_rows = []
+    hist_source = st.radio(
+        "Source",
+        ["Local files", "Persisted (DynamoDB)"],
+        horizontal=True,
+        key="history_source",
+        help="Local: run_*.json files in results/. "
+             "Persisted: runs written to DynamoDB for the selected environment.",
+    )
+    is_local = hist_source == "Local files"
+    _hist_env = st.session_state.get("env_name", "staging")
+
+    # Build the list of selectable runs + summary rows, per source.
+    run_entries: list = []          # (label, key) — key is a Path (local) or run_id (persisted)
+    summary_rows: list = []
+    load_error = None
+
+    if is_local:
+        all_files = sorted(
+            list(RESULTS_DIR.glob("run_*.json")) + list(RESULTS_DIR.glob("chains_*.json")),
+            key=lambda p: p.name, reverse=True,
+        )
+        for f in all_files:
+            run_entries.append((f.name, f))
         for f in all_files[:50]:
             try:
                 data = json.loads(f.read_text(encoding="utf-8"))
-                agg = data.get("aggregated_scores") or {}
-                ar = agg.get("agent_response") or {}
-                overall_status = data.get("overall_status") or ""
-                history_rows.append({
-                    "File": f.name,
-                    "Timestamp": data.get("run_timestamp", "")[:16].replace("T", " "),
-                    "n": str(agg.get("total", "-")),
-                    "Agent mean": f"{ar['mean']:.3f}" if ar.get("mean") is not None else "-",
-                    "Pass rate": f"{ar['pass_rate']*100:.0f}%" if ar.get("pass_rate") is not None else "-",
-                    "Errors": str(agg.get("errors", 0)),
-                    "Quality": "PASS" if (ar.get("pass_rate") or 0) >= 0.7 else ("FAIL" if ar.get("pass_rate") is not None else "-"),
-                    "Regression": overall_status if overall_status else "-",
-                })
             except Exception:
-                pass
+                continue
+            agg = data.get("aggregated_scores") or {}
+            ar = agg.get("agent_response") or {}
+            summary_rows.append({
+                "Run": f.name,
+                "Timestamp": (data.get("run_timestamp") or "")[:16].replace("T", " "),
+                "n": str(agg.get("total", "-")),
+                "Agent mean": f"{ar['mean']:.3f}" if ar.get("mean") is not None else "-",
+                "Pass rate": f"{ar['pass_rate']*100:.0f}%" if ar.get("pass_rate") is not None else "-",
+                "Errors": str(agg.get("errors", 0)),
+                "Status": data.get("overall_status") or "-",
+            })
+        empty_msg = "No runs found. Start an evaluation from the Run tab."
+    else:
+        from tests.validator.persistence import list_persisted_runs
+        try:
+            persisted = list_persisted_runs(_hist_env)
+        except Exception as exc:
+            persisted = []
+            load_error = f"Could not read persisted runs for {_hist_env}-illum: {exc}"
+        for r in persisted:
+            rid = r.get("run_id")
+            ts = (r.get("run_timestamp") or "")[:16].replace("T", " ")
+            run_entries.append((f"{rid}   ({ts})", rid))
+            mean = r.get("agent_response_mean")
+            pr = r.get("agent_response_pass_rate")
+            summary_rows.append({
+                "Run": rid,
+                "Timestamp": ts,
+                "n": str(r.get("question_count", "-")),
+                "Agent mean": f"{mean:.3f}" if mean is not None else "-",
+                "Pass rate": f"{pr*100:.0f}%" if pr is not None else "-",
+                "Errors": "-",
+                "Status": r.get("overall_status") or "-",
+            })
+        empty_msg = (f"No persisted runs found for {_hist_env}-illum. "
+                     "Persist a run from the Run tab or the Local view.")
 
-        if history_rows:
-            st.dataframe(history_rows, width="stretch", height=220)
+    if load_error:
+        st.error(load_error)
 
-        # Trend chart
-        trend_data = [(r["Timestamp"], float(r["Agent mean"])) for r in history_rows if r["Agent mean"] not in ("-", "")]
-        if len(trend_data) >= 2:
-            import pandas as pd
-            df = pd.DataFrame(trend_data[::-1], columns=["Run", "Score"])
-            df = df.set_index("Run")
-            st.line_chart(df)
-            st.caption(f"Pass threshold: {PASS_THRESHOLD}")
+    if not run_entries:
+        st.info(empty_msg)
+    else:
+        # Summary table
+        if summary_rows:
+            st.dataframe(summary_rows, width="stretch", height=220)
+            trend = [
+                (row["Timestamp"], float(row["Agent mean"]))
+                for row in summary_rows if row["Agent mean"] not in ("-", "")
+            ]
+            if len(trend) >= 2:
+                import pandas as pd
+                df = pd.DataFrame(trend[::-1], columns=["Run", "Score"]).set_index("Run")
+                st.line_chart(df)
+                st.caption(f"Pass threshold: {PASS_THRESHOLD}")
 
         st.divider()
 
-        # ?? Run details (combined Results) ?????????????????????????????????????
-        selected_file = st.selectbox(
+        # Run selector
+        option_keys = [key for (_label, key) in run_entries]
+        label_map = {key: label for (label, key) in run_entries}
+        selected_key = st.selectbox(
             "Select run to inspect",
-            all_files,
-            format_func=lambda p: p.name,
+            option_keys,
+            format_func=lambda k: label_map.get(k, str(k)),
             index=0,
             key="history_selected",
         )
 
-        if selected_file and selected_file.exists():
-            run = json.loads(selected_file.read_text(encoding="utf-8"))
-            agg = run.get("aggregated_scores") or {}
-            ar = agg.get("agent_response") or {}
+        # Load the selected run into the common run-dict shape.
+        run = None
+        selected_file = None
+        if is_local:
+            selected_file = selected_key
+            if selected_file and Path(selected_file).exists():
+                try:
+                    run = json.loads(Path(selected_file).read_text(encoding="utf-8"))
+                except Exception as exc:
+                    st.error(f"Could not read {selected_file}: {exc}")
+        else:
+            from tests.validator.persistence import load_persisted_run
+            try:
+                run = load_persisted_run(_hist_env, selected_key)
+            except Exception as exc:
+                st.error(f"Could not load persisted run {selected_key}: {exc}")
+            if run is None and not load_error:
+                st.warning("Run not found in DynamoDB.")
 
-            # Status banner + action buttons
-            banner_col, btn1, btn2 = st.columns([4, 1, 1])
+        if run is not None:
+            agg = run.get("aggregated_scores") or {}
+
+            # Status banner (+ local-only action buttons).
+            if is_local:
+                banner_col, btn1, btn2 = st.columns([4, 1, 1])
+            else:
+                banner_col, btn1, btn2 = st.container(), None, None
             with banner_col:
-                status_type, status_msg = _push_status(selected_file)
+                status_type, status_msg = _run_status(run)
                 if status_type == "success":
                     st.success(status_msg)
                 elif status_type == "warning":
@@ -766,53 +984,40 @@ with tab_history:
                 else:
                     st.error(status_msg)
 
-            if btn1.button("Re-run eval", width="stretch",
-                           disabled=bool(st.session_state.proc),
-                           help="Re-score with the LLM judge (skips already-scored records)."):
-                args = [PYTHON, "-u", "-m", "tests.validator.run",
-                        "--eval-only", str(selected_file), "--skip-scored"]
-                st.session_state.last_run_path = selected_file
-                st.session_state.run_output = [f"$ {' '.join(args)}", ""]
-                st.session_state.reader_done = False
-                proc = _start_proc(args)
-                st.session_state.proc = proc
-                q_ref: queue.Queue = queue.Queue()
-                st.session_state.out_queue = q_ref
-                threading.Thread(target=_reader_thread, args=(proc, q_ref), daemon=True).start()
-                st.rerun()
+            if is_local:
+                if btn1.button("Re-run eval", width="stretch",
+                               disabled=bool(st.session_state.proc),
+                               help="Re-score with the LLM judge (skips already-scored records)."):
+                    args = [PYTHON, "-u", "-m", "tests.validator.run",
+                            "--eval-only", str(selected_file), "--skip-scored"]
+                    _launch(args, origin="history", out_path=selected_file)
 
-            if btn2.button("Persist to DB", width="stretch",
-                           disabled=bool(st.session_state.proc),
-                           help="Write scored results to DynamoDB and run regression comparison."):
-                try:
-                    from tests.validator.persistence import persist_run_file
-                    persist_run_file(selected_file)
-                    if not st.session_state.get("no_compare"):
-                        try:
-                            from tests.validator.comparator import compare_and_persist
-                            comparison = compare_and_persist(
-                                selected_file,
-                                n=int(st.session_state.get("baseline_n", 10)),
-                                delta=float(st.session_state.get("regression_delta", 0.1)),
-                                min_baseline_n=int(st.session_state.get("min_baseline_n", 2)),
-                            )
-                            status = comparison.get("overall_status", "PASSED")
-                            n_reg = len(comparison.get("regressions") or [])
-                            if status == "REGRESSION":
-                                st.warning(
-                                    f"Persisted {selected_file.name}. "
-                                    f"Comparison: REGRESSION — {n_reg} regression(s) vs baseline."
-                                )
-                            else:
-                                st.success(
-                                    f"Persisted {selected_file.name}. Comparison: {status}."
-                                )
-                        except Exception as cmp_exc:
-                            st.warning(f"Persisted but comparison failed: {cmp_exc}")
-                    else:
-                        st.success(f"Persisted {selected_file.name} to DynamoDB.")
-                except Exception as exc:
-                    st.error(f"Persist failed: {exc}")
+                if btn2.button("Persist to DB", width="stretch",
+                               disabled=bool(st.session_state.proc),
+                               help="Compare against the baseline (re-running + healing any "
+                                    "flagged questions to filter noise) and persist if PASSED. "
+                                    "Runs as a subprocess against the live service."):
+                    # Drive the CLI --confirm-file path in a subprocess (uses on-disk
+                    # code, not stale in-process modules) so the UI button behaves exactly
+                    # like the batch: compare → confirm/heal targeted regressions → persist
+                    # only if it resolves to PASSED.
+                    args = [PYTHON, "-u", "-m", "tests.validator.run",
+                            "--confirm-file", str(selected_file), "--persist",
+                            "--allow-local-persist",
+                            "--base-url", st.session_state.get("base_url", "http://localhost:80"),
+                            "--baseline-n", str(int(st.session_state.get("baseline_n", 10))),
+                            "--regression-delta", str(float(st.session_state.get("regression_delta", 0.2)))]
+                    _env = st.session_state.get("env_name", "staging")
+                    if st.session_state.get("service_mode", "local") == "local":
+                        args += ["--env", _env, "--tunnel"]
+                    elif _env:
+                        args += ["--env", _env]
+                    if st.session_state.get("no_compare"):
+                        args.append("--no-compare")
+                    _ref = (st.session_state.get("reference_date") or "").strip()
+                    if _ref:
+                        args += ["--reference-date", _ref]
+                    _launch(args, origin="history", out_path=selected_file)
 
             st.divider()
 
@@ -822,7 +1027,7 @@ with tab_history:
             meta_cols[1].metric("Errors", agg.get("errors", 0))
             avg_lat = agg.get("avg_duration_ms")
             meta_cols[2].metric("Avg latency", f"{avg_lat/1000:.1f}s" if avg_lat else "-")
-            meta_cols[3].metric("Timestamp", run.get("run_timestamp", "")[:16].replace("T", " "))
+            meta_cols[3].metric("Timestamp", (run.get("run_timestamp") or "")[:16].replace("T", " "))
 
             st.divider()
 
@@ -853,12 +1058,13 @@ with tab_history:
                 ]
                 st.dataframe(flow_rows, width="stretch")
 
-            # Per-question table
-            results = run.get("results") or []
-            if results:
+            # Per-question table (question records only; chains shown in the report)
+            from tests.validator.records import question_records as _q_records
+            q_rows_src = _q_records(run.get("results"))
+            if q_rows_src:
                 st.divider()
                 table_rows = []
-                for r in results:
+                for r in q_rows_src:
                     ev = r.get("eval") or {}
                     ar_r = ev.get("agent_response") or {}
                     table_rows.append({
@@ -872,12 +1078,15 @@ with tab_history:
                     })
                 st.dataframe(table_rows, width="stretch", height=350)
 
-            # HTML report
-            html_path = selected_file.with_suffix(".html")
-            if html_path.exists():
-                st.divider()
-                with st.expander("Full HTML report", expanded=True):
-                    _html_report_section(html_path, height=900, key_suffix="history")
+            # HTML report (rendered from the run dict so local + persisted match)
+            from tests.validator.reporter import render_html_report
+            st.divider()
+            with st.expander("Full HTML report", expanded=True):
+                _html_report_section(
+                    render_html_report(run),
+                    f"{run.get('run_id', 'report')}.html",
+                    height=900, key_suffix="history",
+                )
 
 
 # - Tab: Catalog -------------------------------

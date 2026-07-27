@@ -14,6 +14,8 @@ from pathlib import Path
 
 from deepeval.test_case import LLMTestCase
 
+from tests.validator.records import chain_records
+
 from tests.validator.bedrock_judge import BedrockJudge
 from tests.validator.metrics import (
     PASS_THRESHOLD,
@@ -169,7 +171,7 @@ def evaluate_chain_file(run_path: Path, *, skip_scored: bool = False, workers: i
     """
     run = json.loads(run_path.read_text())
     schema_cache = load_schema_docs()
-    chain_results = [r for r in (run.get("results") or []) if "chain_id" in r]
+    chain_results = chain_records(run.get("results"))
     total_chains = len(chain_results)
     write_lock = threading.Lock()
     counter = [0]

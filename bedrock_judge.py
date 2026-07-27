@@ -71,7 +71,9 @@ class BedrockJudge(DeepEvalBaseLLM):
                 response = self.client.converse(
                     modelId=self.model_id,
                     messages=[{"role": "user", "content": [{"text": prompt}]}],
-                    inferenceConfig={"maxTokens": self._max_tokens},
+                    # temperature=0 for the judge: minimise scoring non-determinism
+                    # so run-to-run variance reflects the agent, not the judge.
+                    inferenceConfig={"maxTokens": self._max_tokens, "temperature": 0},
                 )
                 return response["output"]["message"]["content"][0]["text"]
             except (
